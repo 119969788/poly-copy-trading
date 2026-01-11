@@ -35,7 +35,7 @@ pnpm install
 
 ```bash
 # 必需：Polymarket 私钥
-POLYMARKET_PRIVATE_KEY=0xd4ae880287b31d8316f31e938a4bb50d6260d765229076be83d8fa7962f2531b
+POLYMARKET_PRIVATE_KEY=your_private_key_here
 
 
 # 可选：指定要跟随的钱包地址（用逗号分隔）
