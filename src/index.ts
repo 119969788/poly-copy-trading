@@ -97,14 +97,15 @@ async function main() {
     console.log('✅ SDK 初始化成功\n');
 
     // 创建 OnchainService 用于授权和余额检查
+    // privateKey 已在前面检查，这里可以安全使用
     const onchainService = new OnchainService({
-      privateKey,
+      privateKey: privateKey as string,
     });
 
     // 检查余额
     console.log('💰 检查钱包余额...');
     try {
-      const balances = await onchainService.getBalances();
+      const balances = await onchainService.getTokenBalances();
       const usdcBalance = parseFloat(balances.usdcE || '0');
       const maticBalance = parseFloat(balances.matic || '0');
       
@@ -131,9 +132,11 @@ async function main() {
         console.log('正在授权 USDC.e...');
         const result = await onchainService.approveAll();
         console.log('✅ 授权完成');
-        if (result.approvals) {
-          console.log(`   已授权 ${result.approvals.length} 个代币`);
+        const totalApprovals = (result.erc20Approvals?.length || 0) + (result.erc1155Approvals?.length || 0);
+        if (totalApprovals > 0) {
+          console.log(`   已授权 ${totalApprovals} 个代币`);
         }
+        console.log(`   摘要: ${result.summary || '授权成功'}`);
         console.log('   请等待交易确认（约 5-10 秒）...\n');
         
         // 等待交易确认
