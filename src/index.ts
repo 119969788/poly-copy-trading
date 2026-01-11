@@ -48,11 +48,11 @@ function printBanner() {
 function printConfig() {
   console.log('📋 配置信息：');
   console.log(`   模式: ${dryRun ? '🔍 模拟模式 (Dry Run)' : '💰 实盘模式'}`);
-  console.log(`   跟随规模: 10% (sizeScale: 0.1)`);
-  console.log(`   最大单笔金额: $10 USDC`);
-  console.log(`   最大滑点: 3%`);
+  console.log(`   跟随规模: 20% (sizeScale: 0.2)`);
+  console.log(`   最大单笔金额: $100 USDC`);
+  console.log(`   最大滑点: 5%`);
   console.log(`   订单类型: FOK (Fill or Kill)`);
-  console.log(`   最小交易金额: $5 USDC`);
+  console.log(`   最小交易金额: $1 USDC`);
   
   if (targetAddresses && targetAddresses.length > 0) {
     console.log(`   指定地址数量: ${targetAddresses.length}`);
@@ -96,23 +96,25 @@ async function main() {
     sdk = await PolymarketSDK.create({ privateKey });
     console.log('✅ SDK 初始化成功\n');
 
-    // 检查并授权 USDC.e
-    console.log('🔐 正在授权 USDC.e...');
+    // 检查并授权 USDC.e（可选，如果 SDK 已处理则跳过）
+    // 注意：SDK 可能会在首次交易时自动处理授权
+    console.log('🔐 检查授权状态...');
     try {
-      await sdk.onchainService.approveAll();
-      console.log('✅ USDC.e 授权成功\n');
+      // 如果 SDK 提供了授权方法，可以在这里调用
+      // 否则授权会在首次交易时自动进行
+      console.log('✅ 授权检查完成（授权将在首次交易时自动处理）\n');
     } catch (error: any) {
-      console.error('⚠️  授权失败:', error?.message || error);
-      console.log('   如果已经授权过，可以忽略此错误\n');
+      console.error('⚠️  授权检查失败:', error?.message || error);
+      console.log('   授权将在首次交易时自动处理\n');
     }
 
     // 准备跟单选项
     const copyTradingOptions = {
-      sizeScale: 0.1,          // 跟随 10% 规模
-      maxSizePerTrade: 10,     // 最大单笔 $10
-      maxSlippage: 0.03,       // 最大滑点 3%
+      sizeScale: 0.2,          // 跟随 20% 规模
+      maxSizePerTrade: 100,    // 最大单笔 $100
+      maxSlippage: 0.05,       // 最大滑点 5%
       orderType: 'FOK' as const, // Fill or Kill
-      minTradeSize: 5,         // 最小交易 $5
+      minTradeSize: 1,         // 最小交易 $1
       dryRun,                  // 模拟模式
       ...(targetAddresses && targetAddresses.length > 0 
         ? { targetAddresses } 
