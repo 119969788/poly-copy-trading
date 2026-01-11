@@ -1,4 +1,4 @@
-import { PolySDK } from '@catalyst-team/poly-sdk';
+import { PolymarketSDK } from '@catalyst-team/poly-sdk';
 import dotenv from 'dotenv';
 
 // 加载环境变量
@@ -19,9 +19,6 @@ const targetAddresses = targetAddressesStr
 
 // 解析 dryRun 设置
 const dryRun = process.env.DRY_RUN !== 'false';
-
-// 初始化 SDK
-const sdk = new PolySDK({ privateKey });
 
 // 统计信息
 interface TradingStats {
@@ -90,11 +87,19 @@ async function main() {
   printBanner();
   printConfig();
 
+  let sdk: PolymarketSDK | null = null;
+  let autoCopyTrading: any = null;
+
   try {
+    // 初始化 SDK（推荐使用 create 方法，会自动初始化）
+    console.log('🚀 正在初始化 SDK...');
+    sdk = await PolymarketSDK.create({ privateKey });
+    console.log('✅ SDK 初始化成功\n');
+
     // 检查并授权 USDC.e
     console.log('🔐 正在授权 USDC.e...');
     try {
-      await sdk.smartMoney.approveAll();
+      await sdk.onchainService.approveAll();
       console.log('✅ USDC.e 授权成功\n');
     } catch (error: any) {
       console.error('⚠️  授权失败:', error?.message || error);
@@ -112,78 +117,54 @@ async function main() {
       ...(targetAddresses && targetAddresses.length > 0 
         ? { targetAddresses } 
         : { topN: 50 }),       // 如果没有指定地址，则跟随前 50 名
+      
+      // 回调函数
+      onTrade: (trade: any, result: any) => {
+        stats.totalTrades++;
+        
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log(`📈 跟单交易 #${stats.totalTrades}`);
+        console.log(`   时间: ${new Date().toLocaleString('zh-CN')}`);
+        console.log(`   跟随地址: ${trade.traderAddress || trade.address || 'N/A'}`);
+        console.log(`   交易者: ${trade.traderName || 'N/A'}`);
+        console.log(`   市场: ${trade.conditionId || trade.marketId || 'N/A'}`);
+        console.log(`   方向: ${trade.side || 'N/A'}`);
+        console.log(`   结果: ${trade.outcome || 'N/A'}`);
+        console.log(`   金额: $${trade.size || trade.amount || 0}`);
+        console.log(`   价格: ${trade.price || 'N/A'}`);
+        
+        if (result?.success || result === true) {
+          stats.successfulTrades++;
+          const tradeSize = parseFloat(trade.size || trade.amount || '0');
+          if (!isNaN(tradeSize)) {
+            stats.totalVolume += tradeSize;
+          }
+          console.log(`   状态: ✅ 成功`);
+        } else {
+          stats.failedTrades++;
+          console.log(`   状态: ❌ 失败`);
+          if (result?.error || result?.message) {
+            console.log(`   错误: ${result.error || result.message}`);
+          }
+        }
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+
+        // 每 10 笔交易打印一次统计
+        if (stats.totalTrades % 10 === 0) {
+          printStats();
+        }
+      },
+      onError: (error: any) => {
+        console.error('❌ 跟单错误:', error?.message || error);
+      },
     };
 
     console.log('🚀 正在启动自动跟单系统...\n');
 
-    // 启动自动跟单
-    const autoCopyTrading = await sdk.smartMoney.startAutoCopyTrading(copyTradingOptions);
-
-    // 监听交易事件（使用 onTrade 回调）
-    if (typeof autoCopyTrading.onTrade === 'function') {
-      autoCopyTrading.onTrade((trade: any) => {
-        stats.totalTrades++;
-        
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log(`📈 跟单交易 #${stats.totalTrades}`);
-        console.log(`   时间: ${new Date().toLocaleString('zh-CN')}`);
-        console.log(`   跟随地址: ${trade.targetAddress || trade.address || 'N/A'}`);
-        console.log(`   市场: ${trade.marketId || trade.market || 'N/A'}`);
-        console.log(`   方向: ${trade.side || trade.position || 'N/A'}`);
-        console.log(`   金额: $${trade.size || trade.amount || 0}`);
-        console.log(`   价格: ${trade.price || 'N/A'}`);
-        
-        if (trade.status === 'success' || trade.success) {
-          stats.successfulTrades++;
-          stats.totalVolume += parseFloat(trade.size || trade.amount || '0');
-          console.log(`   状态: ✅ 成功`);
-        } else {
-          stats.failedTrades++;
-          console.log(`   状态: ❌ 失败`);
-          if (trade.error || trade.message) {
-            console.log(`   错误: ${trade.error || trade.message}`);
-          }
-        }
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-
-        // 每 10 笔交易打印一次统计
-        if (stats.totalTrades % 10 === 0) {
-          printStats();
-        }
-      });
-    } else if (typeof autoCopyTrading.on === 'function') {
-      // 兼容事件监听器模式
-      autoCopyTrading.on('trade', (trade: any) => {
-        stats.totalTrades++;
-        
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log(`📈 跟单交易 #${stats.totalTrades}`);
-        console.log(`   时间: ${new Date().toLocaleString('zh-CN')}`);
-        console.log(`   跟随地址: ${trade.targetAddress || trade.address || 'N/A'}`);
-        console.log(`   市场: ${trade.marketId || trade.market || 'N/A'}`);
-        console.log(`   方向: ${trade.side || trade.position || 'N/A'}`);
-        console.log(`   金额: $${trade.size || trade.amount || 0}`);
-        console.log(`   价格: ${trade.price || 'N/A'}`);
-        
-        if (trade.status === 'success' || trade.success) {
-          stats.successfulTrades++;
-          stats.totalVolume += parseFloat(trade.size || trade.amount || '0');
-          console.log(`   状态: ✅ 成功`);
-        } else {
-          stats.failedTrades++;
-          console.log(`   状态: ❌ 失败`);
-          if (trade.error || trade.message) {
-            console.log(`   错误: ${trade.error || trade.message}`);
-          }
-        }
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-
-        // 每 10 笔交易打印一次统计
-        if (stats.totalTrades % 10 === 0) {
-          printStats();
-        }
-      });
-    }
+    // 启动自动跟单（回调函数已在 copyTradingOptions 中定义）
+    autoCopyTrading = await sdk.smartMoney.startAutoCopyTrading(copyTradingOptions);
+    
+    console.log(`✅ 已开始跟踪 ${autoCopyTrading.targetAddresses?.length || 0} 个钱包地址\n`);
 
     // 定期打印统计（每 5 分钟）
     const statsInterval = setInterval(() => {
@@ -193,20 +174,14 @@ async function main() {
     // 定期获取和打印统计信息（使用 getStats 方法）
     const statsFetchInterval = setInterval(async () => {
       try {
-        let currentStats: any = null;
-        
-        // 尝试使用 getStats 方法
-        if (typeof autoCopyTrading.getStats === 'function') {
-          currentStats = await autoCopyTrading.getStats();
+        if (autoCopyTrading && typeof autoCopyTrading.getStats === 'function') {
+          const currentStats = autoCopyTrading.getStats();
+          if (currentStats) {
+            console.log('\n📊 SDK 统计信息：');
+            console.log(JSON.stringify(currentStats, null, 2));
+            console.log('');
+          }
         }
-        
-        // 如果有统计信息，打印它
-        if (currentStats) {
-          console.log('\n📊 SDK 统计信息：');
-          console.log(JSON.stringify(currentStats, null, 2));
-          console.log('');
-        }
-        
         // 同时打印本地统计
         printStats();
       } catch (error: any) {
@@ -228,10 +203,13 @@ async function main() {
 
       try {
         // 停止自动跟单
-        if (typeof autoCopyTrading.stop === 'function') {
-          await autoCopyTrading.stop();
-        } else if (typeof autoCopyTrading.destroy === 'function') {
-          await autoCopyTrading.destroy();
+        if (autoCopyTrading && typeof autoCopyTrading.stop === 'function') {
+          autoCopyTrading.stop();
+        }
+        
+        // 停止 SDK
+        if (sdk) {
+          sdk.stop();
         }
 
         // 打印最终统计
@@ -259,6 +237,15 @@ async function main() {
     if (error?.stack) {
       console.error('\n堆栈跟踪:', error.stack);
     }
+    
+    // 清理资源
+    if (autoCopyTrading && typeof autoCopyTrading.stop === 'function') {
+      autoCopyTrading.stop();
+    }
+    if (sdk) {
+      sdk.stop();
+    }
+    
     process.exit(1);
   }
 }
