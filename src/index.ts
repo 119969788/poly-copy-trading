@@ -1,4 +1,4 @@
-import { PolymarketSDK } from '@catalyst-team/poly-sdk';
+import { PolymarketSDK, OnchainService } from '@catalyst-team/poly-sdk';
 import dotenv from 'dotenv';
 
 // 加载环境变量
@@ -96,16 +96,59 @@ async function main() {
     sdk = await PolymarketSDK.create({ privateKey });
     console.log('✅ SDK 初始化成功\n');
 
-    // 检查并授权 USDC.e（可选，如果 SDK 已处理则跳过）
-    // 注意：SDK 可能会在首次交易时自动处理授权
-    console.log('🔐 检查授权状态...');
+    // 创建 OnchainService 用于授权和余额检查
+    const onchainService = new OnchainService({
+      privateKey,
+    });
+
+    // 检查余额
+    console.log('💰 检查钱包余额...');
     try {
-      // 如果 SDK 提供了授权方法，可以在这里调用
-      // 否则授权会在首次交易时自动进行
-      console.log('✅ 授权检查完成（授权将在首次交易时自动处理）\n');
+      const balances = await onchainService.getBalances();
+      const usdcBalance = parseFloat(balances.usdcE || '0');
+      const maticBalance = parseFloat(balances.matic || '0');
+      
+      console.log(`   USDC.e 余额: ${usdcBalance.toFixed(2)} USDC`);
+      console.log(`   MATIC 余额: ${maticBalance.toFixed(4)} MATIC`);
+      
+      if (usdcBalance < 1) {
+        console.warn('⚠️  警告: USDC.e 余额不足，建议至少 $10 USDC');
+      }
+      if (maticBalance < 0.01) {
+        console.warn('⚠️  警告: MATIC 余额不足，需要 Gas 费进行交易');
+      }
     } catch (error: any) {
-      console.error('⚠️  授权检查失败:', error?.message || error);
-      console.log('   授权将在首次交易时自动处理\n');
+      console.error('⚠️  余额检查失败:', error?.message || error);
+    }
+    console.log('');
+
+    // 检查并授权 USDC.e
+    console.log('🔐 正在检查并授权 USDC.e...');
+    try {
+      const status = await onchainService.checkReadyForCTF('100');
+      if (!status.ready) {
+        console.log('⚠️  需要授权，问题:', status.issues);
+        console.log('正在授权 USDC.e...');
+        const result = await onchainService.approveAll();
+        console.log('✅ 授权完成');
+        if (result.approvals) {
+          console.log(`   已授权 ${result.approvals.length} 个代币`);
+        }
+        console.log('   请等待交易确认（约 5-10 秒）...\n');
+        
+        // 等待交易确认
+        await new Promise(resolve => setTimeout(resolve, 8000));
+      } else {
+        console.log('✅ USDC.e 已授权\n');
+      }
+    } catch (error: any) {
+      console.error('⚠️  授权失败:', error?.message || error);
+      if (error?.message?.includes('user rejected') || error?.message?.includes('denied')) {
+        console.error('❌ 授权被拒绝，请手动授权或重试');
+        console.error('   可以在 Polymarket 网站上手动授权 USDC.e\n');
+      } else {
+        console.log('   如果已经授权过，可以忽略此错误\n');
+      }
     }
 
     // 准备跟单选项
