@@ -20,7 +20,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@catalyst-team/poly-sdk": "latest",
+    "@catalyst-team/poly-sdk": "github:cyl19970726/poly-sdk#main",
     "dotenv": "^16.4.5"
   },
   "devDependencies": {
