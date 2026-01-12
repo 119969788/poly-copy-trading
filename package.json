@@ -1,0 +1,32 @@
+{
+  "name": "poly-copy-trading",
+  "version": "1.0.0",
+  "description": "Polymarket 聪明钱自动跟单脚本",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "batch-sell": "tsx src/batch-sell.ts",
+    "batch-sell-real": "tsx src/batch-sell.ts --real"
+  },
+  "keywords": [
+    "polymarket",
+    "copy-trading",
+    "smart-money",
+    "trading-bot"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@catalyst-team/poly-sdk": "latest",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.5",
+    "tsx": "^4.7.1",
+    "typescript": "^5.3.3"
+  }
+}
