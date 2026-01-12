@@ -20,6 +20,10 @@ const targetAddresses = targetAddressesStr
 // 解析 dryRun 设置
 const dryRun = process.env.DRY_RUN !== 'false';
 
+// 解析是否跳过余额和授权检查
+const skipBalanceCheck = process.env.SKIP_BALANCE_CHECK === 'true';
+const skipApprovalCheck = process.env.SKIP_APPROVAL_CHECK === 'true';
+
 // 统计信息
 interface TradingStats {
   totalTrades: number;
@@ -53,6 +57,12 @@ function printConfig() {
   console.log(`   最大滑点: 5%`);
   console.log(`   订单类型: FOK (Fill or Kill)`);
   console.log(`   最小交易金额: $1 USDC`);
+  if (skipBalanceCheck) {
+    console.log(`   余额检查: ⏭️  已跳过`);
+  }
+  if (skipApprovalCheck) {
+    console.log(`   授权检查: ⏭️  已跳过`);
+  }
   
   if (targetAddresses && targetAddresses.length > 0) {
     console.log(`   指定地址数量: ${targetAddresses.length}`);
@@ -102,56 +112,64 @@ async function main() {
       privateKey: privateKey as string,
     });
 
-    // 检查余额
-    console.log('💰 检查钱包余额...');
-    try {
-      const balances = await onchainService.getTokenBalances();
-      const usdcBalance = parseFloat(balances.usdcE || '0');
-      const maticBalance = parseFloat(balances.matic || '0');
-      
-      console.log(`   USDC.e 余额: ${usdcBalance.toFixed(2)} USDC`);
-      console.log(`   MATIC 余额: ${maticBalance.toFixed(4)} MATIC`);
-      
-      if (usdcBalance < 1) {
-        console.warn('⚠️  警告: USDC.e 余额不足，建议至少 $10 USDC');
-      }
-      if (maticBalance < 0.01) {
-        console.warn('⚠️  警告: MATIC 余额不足，需要 Gas 费进行交易');
-      }
-    } catch (error: any) {
-      console.error('⚠️  余额检查失败:', error?.message || error);
-    }
-    console.log('');
-
-    // 检查并授权 USDC.e
-    console.log('🔐 正在检查并授权 USDC.e...');
-    try {
-      const status = await onchainService.checkReadyForCTF('100');
-      if (!status.ready) {
-        console.log('⚠️  需要授权，问题:', status.issues);
-        console.log('正在授权 USDC.e...');
-        const result = await onchainService.approveAll();
-        console.log('✅ 授权完成');
-        const totalApprovals = (result.erc20Approvals?.length || 0) + (result.erc1155Approvals?.length || 0);
-        if (totalApprovals > 0) {
-          console.log(`   已授权 ${totalApprovals} 个代币`);
-        }
-        console.log(`   摘要: ${result.summary || '授权成功'}`);
-        console.log('   请等待交易确认（约 5-10 秒）...\n');
+    // 检查余额（可选）
+    if (!skipBalanceCheck) {
+      console.log('💰 检查钱包余额...');
+      try {
+        const balances = await onchainService.getTokenBalances();
+        const usdcBalance = parseFloat(balances.usdcE || '0');
+        const maticBalance = parseFloat(balances.matic || '0');
         
-        // 等待交易确认
-        await new Promise(resolve => setTimeout(resolve, 8000));
-      } else {
-        console.log('✅ USDC.e 已授权\n');
+        console.log(`   USDC.e 余额: ${usdcBalance.toFixed(2)} USDC`);
+        console.log(`   MATIC 余额: ${maticBalance.toFixed(4)} MATIC`);
+        
+        if (usdcBalance < 1) {
+          console.warn('⚠️  警告: USDC.e 余额不足，建议至少 $10 USDC');
+        }
+        if (maticBalance < 0.01) {
+          console.warn('⚠️  警告: MATIC 余额不足，需要 Gas 费进行交易');
+        }
+      } catch (error: any) {
+        console.error('⚠️  余额检查失败:', error?.message || error);
       }
-    } catch (error: any) {
-      console.error('⚠️  授权失败:', error?.message || error);
-      if (error?.message?.includes('user rejected') || error?.message?.includes('denied')) {
-        console.error('❌ 授权被拒绝，请手动授权或重试');
-        console.error('   可以在 Polymarket 网站上手动授权 USDC.e\n');
-      } else {
-        console.log('   如果已经授权过，可以忽略此错误\n');
+      console.log('');
+    } else {
+      console.log('💰 跳过余额检查\n');
+    }
+
+    // 检查并授权 USDC.e（可选）
+    if (!skipApprovalCheck) {
+      console.log('🔐 正在检查并授权 USDC.e...');
+      try {
+        const status = await onchainService.checkReadyForCTF('100');
+        if (!status.ready) {
+          console.log('⚠️  需要授权，问题:', status.issues);
+          console.log('正在授权 USDC.e...');
+          const result = await onchainService.approveAll();
+          console.log('✅ 授权完成');
+          const totalApprovals = (result.erc20Approvals?.length || 0) + (result.erc1155Approvals?.length || 0);
+          if (totalApprovals > 0) {
+            console.log(`   已授权 ${totalApprovals} 个代币`);
+          }
+          console.log(`   摘要: ${result.summary || '授权成功'}`);
+          console.log('   请等待交易确认（约 5-10 秒）...\n');
+          
+          // 等待交易确认
+          await new Promise(resolve => setTimeout(resolve, 8000));
+        } else {
+          console.log('✅ USDC.e 已授权\n');
+        }
+      } catch (error: any) {
+        console.error('⚠️  授权失败:', error?.message || error);
+        if (error?.message?.includes('user rejected') || error?.message?.includes('denied')) {
+          console.error('❌ 授权被拒绝，请手动授权或重试');
+          console.error('   可以在 Polymarket 网站上手动授权 USDC.e\n');
+        } else {
+          console.log('   如果已经授权过，可以忽略此错误\n');
+        }
       }
+    } else {
+      console.log('🔐 跳过授权检查\n');
     }
 
     // 准备跟单选项
