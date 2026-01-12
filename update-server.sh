@@ -26,6 +26,20 @@ echo ""
 echo "📋 检查当前状态..."
 git status
 
+# 处理本地修改和未跟踪文件
+echo ""
+echo "🔧 处理本地修改..."
+if [ -n "$(git status --porcelain)" ]; then
+    echo "发现本地修改，保存中..."
+    git stash save "自动保存本地修改 - $(date +%Y%m%d_%H%M%S)"
+    
+    # 删除可能冲突的未跟踪文件
+    if [ -f "src/batch-sell.ts" ]; then
+        echo "删除未跟踪的文件: src/batch-sell.ts"
+        rm -f src/batch-sell.ts
+    fi
+fi
+
 # 拉取最新代码
 echo ""
 echo "⬇️  拉取最新代码..."
@@ -33,11 +47,30 @@ git pull origin main
 
 if [ $? -ne 0 ]; then
     echo "❌ 拉取代码失败"
-    echo "如果有本地修改冲突，请先解决冲突或使用:"
-    echo "  git stash"
+    echo "尝试恢复本地修改..."
+    git stash pop 2>/dev/null || true
+    echo ""
+    echo "请手动解决冲突后重试，或使用:"
+    echo "  git reset --hard HEAD  # 放弃本地修改"
     echo "  git pull origin main"
-    echo "  git stash pop"
     exit 1
+fi
+
+# 尝试恢复本地修改（如果有）
+if [ -n "$(git stash list)" ]; then
+    echo ""
+    echo "🔄 尝试恢复本地修改..."
+    if git stash pop 2>/dev/null; then
+        echo "✅ 本地修改已恢复"
+        # 检查是否有冲突
+        if [ -n "$(git diff --check)" ]; then
+            echo "⚠️  检测到冲突，请手动解决:"
+            git status
+        fi
+    else
+        echo "⚠️  恢复本地修改时可能有冲突，请检查:"
+        git status
+    fi
 fi
 
 # 更新依赖
