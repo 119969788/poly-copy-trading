@@ -1,10 +1,9 @@
 module.exports = {
   apps: [{
     name: 'poly-copy-trading',
-    script: 'pnpm',
-    args: 'start',
+    script: 'src/index.ts',
+    interpreter: 'node_modules/.bin/tsx',
     cwd: process.cwd(),
-    interpreter: '/bin/bash',
     instances: 1,
     autorestart: true,
     watch: false,
