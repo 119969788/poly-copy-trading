@@ -73,14 +73,15 @@ async function main() {
     }
     
     // 尝试为每个持仓获取 tokenId
-    console.log('🔍 正在尝试从市场信息中获取 tokenId...\n');
+    console.log('🔍 正在尝试获取 tokenId...\n');
     const positionsWithTokenId = [];
     
     for (let idx = 0; idx < positions.length; idx++) {
       const pos = positions[idx];
-      let tokenId = pos.tokenId || pos.outcomeTokenId || pos.token_id || pos.outcome_token_id;
+      // 从持仓数据中获取 tokenId（asset 字段就是 tokenId）
+      let tokenId = pos.asset || pos.tokenId || pos.outcomeTokenId || pos.token_id || pos.outcome_token_id;
       
-      // 如果 tokenId 不存在，尝试从市场信息中获取
+      // 如果 tokenId 仍然不存在，尝试从市场信息中获取（通常不需要，因为 asset 字段就是 tokenId）
       if (!tokenId && pos.conditionId) {
         try {
           const marketId = pos.conditionId;
