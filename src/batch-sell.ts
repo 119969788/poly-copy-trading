@@ -78,16 +78,88 @@ async function main() {
     
     for (let idx = 0; idx < positions.length; idx++) {
       const pos = positions[idx];
-      // 从持仓数据中获取 tokenId（asset 字段就是 tokenId）
-      let tokenId = pos.asset || pos.tokenId || pos.outcomeTokenId || pos.token_id || pos.outcome_token_id;
       
-      // 如果 tokenId 仍然不存在，尝试从市场信息中获取（通常不需要，因为 asset 字段就是 tokenId）
+      // 打印完整的持仓数据结构（用于调试）
+      if (idx === 0) {
+        console.log('📋 第一个持仓的完整数据结构：');
+        console.log(JSON.stringify(pos, null, 2));
+        console.log('');
+      }
+      
+      // 从持仓数据中获取 tokenId（asset 字段就是 tokenId）
+      // 尝试多种可能的字段名
+      let tokenId = pos.asset || 
+                    pos.tokenId || 
+                    pos.outcomeTokenId || 
+                    pos.token_id || 
+                    pos.outcome_token_id ||
+                    pos.token ||
+                    pos.id;
+      
+      // 如果 tokenId 是数字，转换为字符串
+      if (tokenId && typeof tokenId === 'number') {
+        tokenId = tokenId.toString();
+      }
+      
+      // 如果 tokenId 是 BigInt 或大整数，转换为字符串
+      if (tokenId && (typeof tokenId === 'bigint' || (typeof tokenId === 'object' && tokenId.toString))) {
+        tokenId = tokenId.toString();
+      }
+      
+      console.log(`   持仓 #${idx + 1}:`);
+      console.log(`     asset: ${pos.asset || 'N/A'}`);
+      console.log(`     tokenId: ${pos.tokenId || 'N/A'}`);
+      console.log(`     outcomeTokenId: ${pos.outcomeTokenId || 'N/A'}`);
+      console.log(`     解析到的 tokenId: ${tokenId || 'N/A'}`);
+      
+      // 如果 tokenId 仍然不存在，尝试从 conditionId 和 outcomeIndex 计算
+      if (!tokenId && pos.conditionId && pos.outcomeIndex !== undefined) {
+        try {
+          // 使用 CTF 合约的 getCollectionId 方法计算 tokenId
+          // tokenId = keccak256(abi.encodePacked(conditionId, outcomeIndex))
+          const conditionId = pos.conditionId;
+          const outcomeIndex = pos.outcomeIndex;
+          
+          console.log(`   尝试从 conditionId 和 outcomeIndex 计算 tokenId...`);
+          console.log(`     conditionId: ${conditionId}`);
+          console.log(`     outcomeIndex: ${outcomeIndex}`);
+          
+          // 尝试使用 SDK 的方法计算 tokenId
+          if ((sdk.tradingService as any).getTokenId) {
+            try {
+              tokenId = await (sdk.tradingService as any).getTokenId(conditionId, outcomeIndex);
+              console.log(`     ✅ 使用 SDK 方法计算得到 tokenId: ${tokenId}`);
+            } catch (e: any) {
+              console.log(`     SDK 方法失败: ${e?.message || e}`);
+            }
+          }
+          
+          // 如果 SDK 方法不可用，尝试使用 CTFClient
+          if (!tokenId && (sdk as any).ctfClient) {
+            try {
+              const ctfClient = (sdk as any).ctfClient;
+              if (ctfClient.getTokenId) {
+                tokenId = await ctfClient.getTokenId(conditionId, outcomeIndex);
+                console.log(`     ✅ 使用 CTFClient 计算得到 tokenId: ${tokenId}`);
+              }
+            } catch (e: any) {
+              console.log(`     CTFClient 方法失败: ${e?.message || e}`);
+            }
+          }
+        } catch (error: any) {
+          console.log(`     ❌ 计算 tokenId 时发生错误: ${error?.message || error}`);
+        }
+      }
+      
+      // 如果 tokenId 仍然不存在，尝试从市场信息中获取
       if (!tokenId && pos.conditionId) {
         try {
           const marketId = pos.conditionId;
           const outcome = pos.outcome || pos.side;
           
-          console.log(`   处理持仓 #${idx + 1}: conditionId=${marketId.slice(0, 20)}..., outcome=${outcome}`);
+          console.log(`   尝试从市场信息获取 tokenId...`);
+          console.log(`     conditionId: ${marketId.slice(0, 20)}...`);
+          console.log(`     outcome: ${outcome}`);
           
           // 尝试获取市场信息（不同的 API 方法）
           let marketInfo: any = null;
@@ -100,7 +172,7 @@ async function main() {
               apiMethod = 'getMarket';
             }
           } catch (e: any) {
-            console.log(`     getMarket 失败: ${e?.message || e}`);
+            // 忽略错误，继续尝试其他方法
           }
           
           // 方法2: 尝试 getMarketInfo
@@ -111,7 +183,7 @@ async function main() {
                 apiMethod = 'getMarketInfo';
               }
             } catch (e: any) {
-              console.log(`     getMarketInfo 失败: ${e?.message || e}`);
+              // 忽略错误
             }
           }
           
@@ -123,33 +195,28 @@ async function main() {
                 apiMethod = 'getMarketById';
               }
             } catch (e: any) {
-              console.log(`     getMarketById 失败: ${e?.message || e}`);
+              // 忽略错误
             }
           }
           
           if (marketInfo) {
-            console.log(`     使用 ${apiMethod} 获取到市场信息`);
-            console.log(`     市场信息结构: ${Object.keys(marketInfo).join(', ')}`);
+            console.log(`     ✅ 使用 ${apiMethod} 获取到市场信息`);
             
             // 尝试从 tokens 数组中查找
             if (marketInfo.tokens && Array.isArray(marketInfo.tokens)) {
-              console.log(`     找到 tokens 数组，长度: ${marketInfo.tokens.length}`);
               const token = marketInfo.tokens.find((t: any) => 
                 (t.outcome === outcome || t.side === outcome || t.name === outcome) ||
                 (outcome === 'Down' && (t.name === 'No' || t.outcome === 'No')) ||
                 (outcome === 'Up' && (t.name === 'Yes' || t.outcome === 'Yes'))
               );
-              if (token && (token.tokenId || token.id)) {
-                tokenId = token.tokenId || token.id;
+              if (token && (token.tokenId || token.id || token.asset)) {
+                tokenId = token.tokenId || token.id || token.asset;
                 console.log(`     ✅ 从 tokens 数组中找到 tokenId: ${tokenId}`);
-              } else {
-                console.log(`     ❌ tokens 数组中未找到匹配的 token (outcome: ${outcome})`);
               }
             }
             
             // 尝试从 outcomeTokens 对象中查找
             if (!tokenId && marketInfo.outcomeTokens) {
-              console.log(`     找到 outcomeTokens 对象`);
               const outcomeLower = outcome.toLowerCase();
               const possibleKeys = [outcomeLower, outcome, outcome === 'Down' ? 'no' : 'yes', outcome === 'Down' ? 'No' : 'Yes'];
               for (const key of possibleKeys) {
@@ -159,26 +226,23 @@ async function main() {
                   break;
                 }
               }
-              if (!tokenId) {
-                console.log(`     ❌ outcomeTokens 中未找到匹配的 token (尝试的键: ${possibleKeys.join(', ')})`);
-              }
             }
             
             if (!tokenId) {
               console.log(`     ❌ 无法从市场信息中提取 tokenId`);
-              console.log(`     调试：市场信息的完整结构（前500字符）:`);
-              console.log(JSON.stringify(marketInfo, null, 2).substring(0, 500));
             }
           } else {
-            console.log(`     ❌ 无法获取市场信息（尝试了 getMarket, getMarketInfo, getMarketById）`);
+            console.log(`     ❌ 无法获取市场信息`);
           }
         } catch (error: any) {
           console.log(`     ❌ 获取 tokenId 时发生错误: ${error?.message || error}`);
         }
-      } else if (!tokenId) {
-        console.log(`   持仓 #${idx + 1}: 没有 conditionId，无法获取 tokenId`);
+      }
+      
+      if (!tokenId) {
+        console.log(`   ⚠️  警告: 持仓 #${idx + 1} 无法获取 tokenId`);
       } else {
-        console.log(`   持仓 #${idx + 1}: 已有 tokenId: ${tokenId}`);
+        console.log(`   ✅ 持仓 #${idx + 1} tokenId: ${tokenId}`);
       }
       
       positionsWithTokenId.push({
@@ -269,17 +333,39 @@ async function main() {
       
       try {
         // 使用解析到的 tokenId
-        const tokenId = pos._resolvedTokenId;
+        let tokenId = pos._resolvedTokenId;
         const amount = pos.size || pos.amount || pos.balance || '1';
         
+        // 如果 tokenId 仍然不存在，尝试最后一次从原始数据获取
         if (!tokenId) {
-          throw new Error('代币ID不存在');
+          tokenId = pos.asset || pos.tokenId || pos.outcomeTokenId || pos.token_id || pos.outcome_token_id;
         }
+        
+        // 如果 tokenId 是数字或 BigInt，转换为字符串
+        if (tokenId) {
+          if (typeof tokenId === 'number' || typeof tokenId === 'bigint') {
+            tokenId = tokenId.toString();
+          } else if (typeof tokenId === 'object' && tokenId.toString) {
+            tokenId = tokenId.toString();
+          }
+        }
+        
+        if (!tokenId) {
+          // 打印完整的持仓数据以便调试
+          console.log(`   ❌ 无法获取 tokenId，持仓完整数据：`);
+          console.log(`   ${JSON.stringify(pos, null, 2).substring(0, 1000)}`);
+          throw new Error('代币ID不存在：无法从持仓数据中获取 tokenId（asset/tokenId/outcomeTokenId 字段都不存在）');
+        }
+        
+        // 确保 tokenId 是字符串格式
+        const tokenIdStr = String(tokenId);
+        
+        console.log(`   使用 tokenId: ${tokenIdStr}`);
         
         // 尝试使用市场订单卖出
         // 注意：对于 SELL，amount 是 shares 数量
         const order = await sdk.tradingService.createMarketOrder({
-          tokenId: tokenId,
+          tokenId: tokenIdStr,
           side: 'SELL',
           amount: parseFloat(amount.toString()), // 转换为数字
           orderType: 'FAK', // Fill and Kill，部分成交也可以
