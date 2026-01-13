@@ -195,68 +195,34 @@ async function main() {
         }
 
         // 尝试使用 SDK 的赎回方法
-        // 注意：SDK 可能有不同的 API 方法名，这里尝试几种可能的方法
+        // 注意：SDK 的 redeem 方法只接受 tokenId 字符串参数，不接受对象
         let redeemResult: any = null;
         let lastError: any = null;
         
         try {
-          // 方法1: 尝试使用 asset (tokenId) 作为参数
+          // 方法1: 尝试使用 asset (tokenId) 作为参数（只传递字符串，不传递对象）
           if ((onchainService as any).redeem) {
-            try {
-              redeemResult = await (onchainService as any).redeem(tokenIdParam);
-            } catch (e: any) {
-              lastError = e;
-              // 如果失败，尝试传递对象参数
-              if (conditionId && outcomeIndex !== undefined) {
-                try {
-                  redeemResult = await (onchainService as any).redeem({
-                    conditionId,
-                    outcomeIndex,
-                    tokenId: tokenIdParam
-                  });
-                } catch (e2: any) {
-                  lastError = e2;
-                }
-              }
-            }
+            redeemResult = await (onchainService as any).redeem(tokenIdParam);
           } else if ((onchainService as any).redeemTokens) {
-            try {
-              redeemResult = await (onchainService as any).redeemTokens(tokenIdParam);
-            } catch (e: any) {
-              lastError = e;
-            }
+            redeemResult = await (onchainService as any).redeemTokens(tokenIdParam);
           } else if ((onchainService as any).claimSettledTokens) {
-            try {
-              redeemResult = await (onchainService as any).claimSettledTokens(tokenIdParam);
-            } catch (e: any) {
-              lastError = e;
-            }
+            redeemResult = await (onchainService as any).claimSettledTokens(tokenIdParam);
           } else if ((sdk.tradingService as any).redeem) {
-            try {
-              redeemResult = await (sdk.tradingService as any).redeem(tokenIdParam);
-            } catch (e: any) {
-              lastError = e;
-            }
+            redeemResult = await (sdk.tradingService as any).redeem(tokenIdParam);
           } else if ((sdk.tradingService as any).redeemTokens) {
-            try {
-              redeemResult = await (sdk.tradingService as any).redeemTokens(tokenIdParam);
-            } catch (e: any) {
-              lastError = e;
-            }
-          }
-          
-          // 如果所有方法都失败，抛出最后一个错误
-          if (!redeemResult && lastError) {
-            throw lastError;
+            redeemResult = await (sdk.tradingService as any).redeemTokens(tokenIdParam);
+          } else {
+            throw new Error('SDK 不支持赎回方法，请检查 SDK 文档');
           }
         } catch (apiError: any) {
+          lastError = apiError;
           const errorMsg = apiError?.message || String(apiError);
           
           // 检查是否是交易回退错误（可能表示代币无法赎回）
-          if (errorMsg.includes('revert') || errorMsg.includes('INVALID') || errorMsg.includes('CALL_EXCEPTION')) {
-            throw new Error(`赎回失败：交易被回退。这可能意味着：1) 该方向的代币无法赎回（市场结算结果不支持），2) 代币已被赎回，或 3) 市场尚未完全结算。原始错误: ${errorMsg.substring(0, 200)}`);
+          if (errorMsg.includes('revert') || errorMsg.includes('INVALID') || errorMsg.includes('CALL_EXCEPTION') || errorMsg.includes('invalid opcode')) {
+            throw new Error(`赎回失败：交易被回退。这可能意味着：1) 该方向的代币无法赎回（市场结算结果不支持，你持有的是失败方向的代币），2) 代币已被赎回，或 3) 市场尚未完全结算。原始错误: ${errorMsg.substring(0, 150)}`);
           } else {
-            throw new Error(`赎回 API 调用失败: ${errorMsg}`);
+            throw new Error(`赎回 API 调用失败: ${errorMsg.substring(0, 200)}`);
           }
         }
         
