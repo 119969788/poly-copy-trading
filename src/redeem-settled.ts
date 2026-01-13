@@ -158,14 +158,35 @@ async function main() {
       
       try {
         // 获取 asset（tokenId），这是赎回时需要使用的
-        const asset = pos.asset || pos.tokenId || pos.outcomeTokenId;
+        let asset = pos.asset || pos.tokenId || pos.outcomeTokenId;
         const conditionId = pos.conditionId || pos.market;
         
         if (!asset) {
           throw new Error('代币ID（asset）不存在，无法赎回');
         }
 
-        console.log(`   使用 asset (tokenId): ${asset}`);
+        // 将 tokenId 转换为正确的格式（如果需要的话）
+        // 如果已经是 0x 开头的十六进制，保持不变；否则转换为 BigInt 再转回字符串
+        let tokenIdParam: string;
+        if (typeof asset === 'string') {
+          if (asset.startsWith('0x')) {
+            tokenIdParam = asset;
+          } else {
+            // 大整数字符串，转换为十六进制
+            try {
+              const bigIntValue = BigInt(asset);
+              tokenIdParam = '0x' + bigIntValue.toString(16);
+            } catch (e) {
+              // 如果转换失败，直接使用原始值
+              tokenIdParam = asset;
+            }
+          }
+        } else {
+          // 如果是数字，转换为十六进制
+          tokenIdParam = '0x' + BigInt(asset).toString(16);
+        }
+
+        console.log(`   使用 asset (tokenId): ${tokenIdParam}`);
 
         // 尝试使用 SDK 的赎回方法
         // 注意：SDK 可能有不同的 API 方法名，这里尝试几种可能的方法
@@ -174,15 +195,15 @@ async function main() {
         try {
           // 方法1: 尝试使用 asset (tokenId) 作为参数
           if ((onchainService as any).redeem) {
-            redeemResult = await (onchainService as any).redeem(asset);
+            redeemResult = await (onchainService as any).redeem(tokenIdParam);
           } else if ((onchainService as any).redeemTokens) {
-            redeemResult = await (onchainService as any).redeemTokens(asset);
+            redeemResult = await (onchainService as any).redeemTokens(tokenIdParam);
           } else if ((onchainService as any).claimSettledTokens) {
-            redeemResult = await (onchainService as any).claimSettledTokens(asset);
+            redeemResult = await (onchainService as any).claimSettledTokens(tokenIdParam);
           } else if ((sdk.tradingService as any).redeem) {
-            redeemResult = await (sdk.tradingService as any).redeem(asset);
+            redeemResult = await (sdk.tradingService as any).redeem(tokenIdParam);
           } else if ((sdk.tradingService as any).redeemTokens) {
-            redeemResult = await (sdk.tradingService as any).redeemTokens(asset);
+            redeemResult = await (sdk.tradingService as any).redeemTokens(tokenIdParam);
           } else {
             // 如果使用 asset 的方法都不存在，尝试使用 conditionId
             if ((onchainService as any).redeem) {
