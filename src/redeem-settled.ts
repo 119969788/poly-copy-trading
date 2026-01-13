@@ -236,8 +236,10 @@ async function main() {
         if (redeemResult?.amount !== undefined) {
           console.log(`   回收金额: $${redeemResult.amount} USDC.e`);
         }
-        if (redeemResult?.txHash) {
-          console.log(`   交易哈希: ${redeemResult.txHash}`);
+        if (redeemResult?.txHash || redeemResult?.hash || redeemResult?.transactionHash) {
+          const txHash = redeemResult?.txHash || redeemResult?.hash || redeemResult?.transactionHash;
+          console.log(`   交易哈希: ${txHash}`);
+          console.log(`   查看交易: https://polygonscan.com/tx/${txHash}`);
         }
       } catch (error: any) {
         results.push({ 
