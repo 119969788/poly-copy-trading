@@ -72,12 +72,83 @@ async function main() {
       console.log('');
     }
     
+    // 尝试为每个持仓获取 tokenId
+    console.log('🔍 正在尝试从市场信息中获取 tokenId...\n');
+    const positionsWithTokenId = [];
+    
+    for (const pos of positions) {
+      let tokenId = pos.tokenId || pos.outcomeTokenId || pos.token_id || pos.outcome_token_id;
+      
+      // 如果 tokenId 不存在，尝试从市场信息中获取
+      if (!tokenId && pos.conditionId) {
+        try {
+          // 尝试使用 conditionId 作为 marketId 获取市场信息
+          const marketId = pos.conditionId;
+          
+          // 尝试获取市场信息（不同的 API 方法）
+          let marketInfo: any = null;
+          
+          // 方法1: 尝试 getMarket
+          try {
+            marketInfo = await (sdk.dataApi as any).getMarket?.(marketId);
+          } catch (e) {
+            // 忽略错误
+          }
+          
+          // 方法2: 尝试 getMarketInfo
+          if (!marketInfo) {
+            try {
+              marketInfo = await (sdk.dataApi as any).getMarketInfo?.(marketId);
+            } catch (e) {
+              // 忽略错误
+            }
+          }
+          
+          // 如果获取到市场信息，尝试从中提取 tokenId
+          if (marketInfo) {
+            const outcome = pos.outcome || pos.side;
+            
+            // 尝试从 tokens 数组中查找
+            if (marketInfo.tokens && Array.isArray(marketInfo.tokens)) {
+              const token = marketInfo.tokens.find((t: any) => 
+                (t.outcome === outcome || t.side === outcome || t.name === outcome) ||
+                (outcome === 'Down' && (t.name === 'No' || t.outcome === 'No')) ||
+                (outcome === 'Up' && (t.name === 'Yes' || t.outcome === 'Yes'))
+              );
+              if (token && (token.tokenId || token.id)) {
+                tokenId = token.tokenId || token.id;
+              }
+            }
+            
+            // 尝试从 outcomeTokens 对象中查找
+            if (!tokenId && marketInfo.outcomeTokens) {
+              const outcomeLower = outcome.toLowerCase();
+              if (marketInfo.outcomeTokens[outcomeLower] || 
+                  marketInfo.outcomeTokens[outcome] ||
+                  marketInfo.outcomeTokens[outcome === 'Down' ? 'no' : 'yes']) {
+                tokenId = marketInfo.outcomeTokens[outcomeLower] || 
+                         marketInfo.outcomeTokens[outcome] ||
+                         marketInfo.outcomeTokens[outcome === 'Down' ? 'no' : 'yes'];
+              }
+            }
+          }
+        } catch (error) {
+          // 忽略错误，继续使用原始数据
+        }
+      }
+      
+      positionsWithTokenId.push({
+        ...pos,
+        _resolvedTokenId: tokenId, // 保存解析到的 tokenId
+      });
+    }
+    
     // 显示持仓信息
-    positions.forEach((pos: any, index: number) => {
+    positionsWithTokenId.forEach((pos: any, index: number) => {
       console.log(`持仓 #${index + 1}:`);
       console.log(`   市场: ${pos.market || pos.conditionId || 'N/A'}`);
       console.log(`   条件ID: ${pos.conditionId || 'N/A'}`);
-      console.log(`   代币ID: ${pos.tokenId || pos.outcomeTokenId || pos.token_id || pos.outcome_token_id || 'N/A'}`);
+      console.log(`   代币ID: ${pos._resolvedTokenId || pos.tokenId || pos.outcomeTokenId || pos.token_id || pos.outcome_token_id || 'N/A'}`);
       console.log(`   数量: ${pos.size || pos.amount || pos.balance || '0'}`);
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
       console.log(`   价值: $${pos.value || pos.usdcValue || '0'}`);
@@ -91,10 +162,25 @@ async function main() {
       return;
     }
 
+    // 过滤出有 tokenId 的持仓
+    const validPositions = positionsWithTokenId.filter((pos: any) => pos._resolvedTokenId);
+    const invalidPositions = positionsWithTokenId.filter((pos: any) => !pos._resolvedTokenId);
+    
+    if (invalidPositions.length > 0) {
+      console.log(`⚠️  警告: ${invalidPositions.length} 个持仓无法获取 tokenId，将被跳过\n`);
+    }
+    
+    if (validPositions.length === 0) {
+      console.log('❌ 错误：所有持仓都无法获取 tokenId，无法执行卖出操作\n');
+      console.log('💡 提示：这可能是因为持仓数据结构发生了变化，或者市场信息无法获取');
+      console.log('   请查看上方的调试信息，了解持仓数据的完整结构\n');
+      return;
+    }
+    
     // 确认操作
     console.log('⚠️  警告：即将卖出所有持仓！');
     console.log(`   模式: 💰 实盘模式`);
-    console.log(`   持仓数量: ${positions.length}`);
+    console.log(`   持仓数量: ${validPositions.length} (${invalidPositions.length} 个无法获取 tokenId，已跳过)`);
     console.log('');
     
     // 批量卖出
@@ -102,31 +188,23 @@ async function main() {
     
     const results: Array<{ success: boolean; position: any; error?: string }> = [];
     
-    for (let i = 0; i < positions.length; i++) {
-      const pos = positions[i];
+    for (let i = 0; i < validPositions.length; i++) {
+      const pos = validPositions[i];
       console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      console.log(`卖出持仓 #${i + 1}/${positions.length}`);
+      console.log(`卖出持仓 #${i + 1}/${validPositions.length}`);
       console.log(`   市场: ${pos.market || pos.conditionId || 'N/A'}`);
       console.log(`   条件ID: ${pos.conditionId || 'N/A'}`);
-      console.log(`   代币ID: ${pos.tokenId || pos.outcomeTokenId || pos.token_id || pos.outcome_token_id || 'N/A'}`);
+      console.log(`   代币ID: ${pos._resolvedTokenId || 'N/A'}`);
       console.log(`   数量: ${pos.size || pos.amount || pos.balance || '0'}`);
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
       
       try {
-        // 获取代币ID和数量（尝试多个可能的字段名）
-        const tokenId = pos.tokenId || pos.outcomeTokenId || pos.token_id || pos.outcome_token_id;
+        // 使用解析到的 tokenId
+        const tokenId = pos._resolvedTokenId;
         const amount = pos.size || pos.amount || pos.balance || '1';
         
         if (!tokenId) {
-          console.log(`   ⚠️  警告：无法获取代币ID，跳过此持仓`);
-          console.log(`   💡 提示：请查看上方的调试信息，了解持仓数据结构`);
-          results.push({ 
-            success: false, 
-            position: pos, 
-            error: '代币ID不存在，持仓数据中可能使用了不同的字段名' 
-          });
-          console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-          continue;
+          throw new Error('代币ID不存在');
         }
         
         // 尝试使用市场订单卖出
@@ -170,15 +248,23 @@ async function main() {
     const successCount = results.filter(r => r.success).length;
     const failCount = results.filter(r => !r.success).length;
     
-    console.log(`总持仓数: ${positions.length}`);
+    console.log(`总持仓数: ${positionsWithTokenId.length} (${validPositions.length} 个有效，${invalidPositions.length} 个无法获取 tokenId)`);
     console.log(`成功卖出: ${successCount}`);
     console.log(`失败: ${failCount}`);
+    
+    if (invalidPositions.length > 0) {
+      console.log(`\n无法获取 tokenId 的持仓（${invalidPositions.length} 个）：`);
+      invalidPositions.forEach((pos, i) => {
+        console.log(`   ${i + 1}. 条件ID: ${pos.conditionId || 'N/A'}`);
+        console.log(`      方向: ${pos.outcome || pos.side || 'N/A'}`);
+      });
+    }
     
     if (failCount > 0) {
       console.log('\n失败的持仓：');
       results.filter(r => !r.success).forEach((r, i) => {
         console.log(`   ${i + 1}. 条件ID: ${r.position.conditionId || 'N/A'}`);
-        console.log(`      代币ID: ${r.position.tokenId || r.position.outcomeTokenId || r.position.token_id || r.position.outcome_token_id || 'N/A'}`);
+        console.log(`      代币ID: ${r.position._resolvedTokenId || r.position.tokenId || r.position.outcomeTokenId || r.position.token_id || r.position.outcome_token_id || 'N/A'}`);
         console.log(`      方向: ${r.position.outcome || r.position.side || 'N/A'}`);
         console.log(`      错误: ${r.error}`);
       });

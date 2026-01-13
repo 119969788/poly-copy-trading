@@ -10,7 +10,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "batch-sell": "tsx src/batch-sell.ts",
-    "dip-arb": "tsx src/dip-arb-15m.ts"
+    "dip-arb": "tsx src/dip-arb-15m.ts",
+    "redeem": "tsx src/redeem-settled.ts"
   },
   "keywords": [
     "polymarket",
