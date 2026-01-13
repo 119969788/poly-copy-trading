@@ -262,13 +262,41 @@ async function main() {
           orderType: 'FAK', // Fill and Kill，部分成交也可以
         });
         
-        results.push({ success: true, position: pos });
-        console.log(`   状态: ✅ 成功`);
-        if (order.id) {
-          console.log(`   订单ID: ${order.id}`);
-        }
-        if (order.success === false && order.error) {
-          console.log(`   警告: ${order.error}`);
+        // 打印订单响应的完整信息（用于调试）
+        console.log(`   订单响应: ${JSON.stringify(order, null, 2).substring(0, 500)}`);
+        
+        // 检查订单执行结果（更严格的检查）
+        const hasError = order?.error || order?.message || order?.success === false;
+        const hasOrderId = !!order?.id;
+        const filledAmount = order?.filled || order?.filledAmount || order?.filledSize || order?.amountFilled;
+        const hasReceipt = order?.receipt || order?.txHash;
+        const isSuccess = order?.success === true || (hasOrderId && !hasError && (filledAmount || hasReceipt));
+        
+        if (isSuccess) {
+          results.push({ success: true, position: pos });
+          console.log(`   状态: ✅ 成功`);
+          if (order.id) {
+            console.log(`   订单ID: ${order.id}`);
+          }
+          if (filledAmount) {
+            console.log(`   成交数量: ${filledAmount}`);
+          }
+          if (order.usdcReceived || order.receivedAmount) {
+            console.log(`   收到金额: $${order.usdcReceived || order.receivedAmount} USDC.e`);
+          }
+          if (hasReceipt) {
+            console.log(`   交易哈希: ${order.receipt?.transactionHash || order.txHash}`);
+          }
+        } else {
+          const errorMsg = order?.error || order?.message || '订单执行失败（未找到成功标志）';
+          results.push({ 
+            success: false, 
+            position: pos, 
+            error: errorMsg 
+          });
+          console.log(`   状态: ❌ 失败`);
+          console.log(`   错误: ${errorMsg}`);
+          console.log(`   订单详情: success=${order?.success}, id=${order?.id}, error=${order?.error || 'none'}`);
         }
       } catch (error: any) {
         results.push({ 
