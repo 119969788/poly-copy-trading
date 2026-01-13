@@ -190,67 +190,104 @@ async function main() {
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
       
       try {
-        // 获取 asset（tokenId），这是赎回时需要使用的
-        let asset = pos.asset || pos.tokenId || pos.outcomeTokenId;
+        // 获取赎回所需的参数
         const conditionId = pos.conditionId || pos.market;
         const outcomeIndex = pos.outcomeIndex;
+        const asset = pos.asset || pos.tokenId || pos.outcomeTokenId;
+        const amount = parseFloat(pos.size || pos.amount || pos.balance || '0');
         
-        if (!asset) {
-          throw new Error('代币ID（asset）不存在，无法赎回');
+        if (!conditionId) {
+          throw new Error('条件ID（conditionId）不存在，无法赎回');
+        }
+        
+        if (outcomeIndex === undefined || outcomeIndex === null) {
+          throw new Error('方向索引（outcomeIndex）不存在，无法赎回');
         }
 
-        // 将 tokenId 转换为正确的格式（如果需要的话）
-        // 如果已经是 0x 开头的十六进制，保持不变；否则转换为 BigInt 再转回字符串
-        let tokenIdParam: string;
-        if (typeof asset === 'string') {
-          if (asset.startsWith('0x')) {
-            tokenIdParam = asset;
-          } else {
-            // 大整数字符串，转换为十六进制
-            try {
-              const bigIntValue = BigInt(asset);
-              tokenIdParam = '0x' + bigIntValue.toString(16);
-            } catch (e) {
-              // 如果转换失败，直接使用原始值
-              tokenIdParam = asset;
-            }
-          }
-        } else {
-          // 如果是数字，转换为十六进制
-          tokenIdParam = '0x' + BigInt(asset).toString(16);
+        console.log(`   条件ID: ${conditionId}`);
+        console.log(`   方向索引: ${outcomeIndex}`);
+        console.log(`   数量: ${amount.toFixed(4)}`);
+        if (asset) {
+          console.log(`   代币ID (asset): ${asset}`);
         }
 
-        console.log(`   使用 asset (tokenId): ${tokenIdParam}`);
-        if (outcomeIndex !== undefined) {
-          console.log(`   方向索引: ${outcomeIndex}`);
-        }
-
-        // 尝试使用 SDK 的赎回方法
-        // 注意：SDK 的 redeem 方法只接受 tokenId 字符串参数，不接受对象
+        // 尝试使用 SDK 的 CTF 赎回方法（基于 poly-mcp 的 ctf_redeem 实现思路）
+        // 优先使用 conditionId + outcomeIndex 的方式（更符合 CTF 标准）
         let redeemResult: any = null;
         let lastError: any = null;
         
         try {
-          // 方法1: 尝试使用 asset (tokenId) 作为参数（只传递字符串，不传递对象）
-          if ((onchainService as any).redeem) {
-            redeemResult = await (onchainService as any).redeem(tokenIdParam);
-          } else if ((onchainService as any).redeemTokens) {
-            redeemResult = await (onchainService as any).redeemTokens(tokenIdParam);
-          } else if ((onchainService as any).claimSettledTokens) {
-            redeemResult = await (onchainService as any).claimSettledTokens(tokenIdParam);
-          } else if ((sdk.tradingService as any).redeem) {
-            redeemResult = await (sdk.tradingService as any).redeem(tokenIdParam);
-          } else if ((sdk.tradingService as any).redeemTokens) {
-            redeemResult = await (sdk.tradingService as any).redeemTokens(tokenIdParam);
+          // 方法1: 尝试使用 CTF 的 redeem 方法（conditionId + outcomeIndex）
+          if ((onchainService as any).ctfRedeem) {
+            redeemResult = await (onchainService as any).ctfRedeem(conditionId, outcomeIndex);
+          } else if ((onchainService as any).redeemCondition) {
+            redeemResult = await (onchainService as any).redeemCondition(conditionId, outcomeIndex);
+          } else if ((sdk.tradingService as any).ctfRedeem) {
+            redeemResult = await (sdk.tradingService as any).ctfRedeem(conditionId, outcomeIndex);
+          } else if ((sdk.tradingService as any).redeemCondition) {
+            redeemResult = await (sdk.tradingService as any).redeemCondition(conditionId, outcomeIndex);
+          } 
+          // 方法2: 尝试使用 CTFClient（如果 SDK 有的话）
+          else if ((sdk as any).ctfClient) {
+            const ctfClient = (sdk as any).ctfClient;
+            if (ctfClient.redeem) {
+              redeemResult = await ctfClient.redeem(conditionId, outcomeIndex);
+            } else if (ctfClient.redeemPositions) {
+              // CTF 的 redeemPositions 方法通常需要 conditionId, indexSets, 和 collateralToken
+              const indexSets = [[outcomeIndex]]; // 将 outcomeIndex 包装成 indexSets 格式
+              redeemResult = await ctfClient.redeemPositions(conditionId, indexSets);
+            }
+          }
+          // 方法3: 回退到使用 tokenId（asset）的方式
+          else if (asset) {
+            // 将 tokenId 转换为正确的格式
+            let tokenIdParam: string;
+            if (typeof asset === 'string') {
+              if (asset.startsWith('0x')) {
+                tokenIdParam = asset;
+              } else {
+                // 大整数字符串，转换为十六进制
+                try {
+                  const bigIntValue = BigInt(asset);
+                  tokenIdParam = '0x' + bigIntValue.toString(16);
+                } catch (e) {
+                  tokenIdParam = asset;
+                }
+              }
+            } else {
+              tokenIdParam = '0x' + BigInt(asset).toString(16);
+            }
+            
+            console.log(`   回退到使用 tokenId 方式: ${tokenIdParam}`);
+            
+            // 尝试使用 tokenId 赎回
+            if ((onchainService as any).redeem) {
+              redeemResult = await (onchainService as any).redeem(tokenIdParam);
+            } else if ((onchainService as any).redeemTokens) {
+              redeemResult = await (onchainService as any).redeemTokens(tokenIdParam);
+            } else if ((onchainService as any).claimSettledTokens) {
+              redeemResult = await (onchainService as any).claimSettledTokens(tokenIdParam);
+            } else if ((sdk.tradingService as any).redeem) {
+              redeemResult = await (sdk.tradingService as any).redeem(tokenIdParam);
+            } else if ((sdk.tradingService as any).redeemTokens) {
+              redeemResult = await (sdk.tradingService as any).redeemTokens(tokenIdParam);
+            } else {
+              throw new Error('SDK 不支持任何赎回方法，请检查 SDK 文档');
+            }
           } else {
-            throw new Error('SDK 不支持赎回方法，请检查 SDK 文档');
+            throw new Error('无法获取赎回所需的参数（conditionId/outcomeIndex 或 asset）');
           }
         } catch (apiError: any) {
           lastError = apiError;
           const errorMsg = apiError?.message || String(apiError);
           
           // 检查是否是交易回退错误（可能表示代币无法赎回）
-          if (errorMsg.includes('revert') || errorMsg.includes('INVALID') || errorMsg.includes('CALL_EXCEPTION') || errorMsg.includes('invalid opcode')) {
+          if (errorMsg.includes('revert') || 
+              errorMsg.includes('INVALID') || 
+              errorMsg.includes('CALL_EXCEPTION') || 
+              errorMsg.includes('invalid opcode') ||
+              errorMsg.includes('cannot redeem') ||
+              errorMsg.includes('not redeemable')) {
             // 这是一个预期的错误 - 持有失败方向的代币无法赎回
             throw new Error(`无法赎回：该方向的代币无法赎回（可能持有的是失败方向的代币，只有获胜方向的代币才能赎回）`);
           } else {
