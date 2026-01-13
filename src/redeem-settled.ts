@@ -124,10 +124,29 @@ async function main() {
       console.log(`   市场: ${pos.market || pos.conditionId || 'N/A'}`);
       console.log(`   条件ID: ${pos.conditionId || 'N/A'}`);
       console.log(`   代币ID (asset): ${pos.asset || 'N/A'}`);
-      console.log(`   数量: ${pos.size || pos.amount || pos.balance || '0'}`);
+      const size = parseFloat(pos.size || pos.amount || pos.balance || '0');
+      const currentValue = parseFloat(pos.currentValue || pos.value || pos.usdcValue || '0');
+      const initialValue = parseFloat(pos.initialValue || '0');
+      
+      // 对于已结算且可赎回的代币，价值应该是数量（可以 1:1 赎回成 USDC.e）
+      // 对于已结算但不可赎回的代币，价值是 0
+      let displayValue = currentValue;
+      if (pos.redeemable && size > 0) {
+        // 可赎回的代币，价值应该是数量（1:1 兑换）
+        displayValue = size;
+      }
+      
+      console.log(`   数量: ${size.toFixed(4)}`);
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
       console.log(`   方向索引: ${pos.outcomeIndex !== undefined ? pos.outcomeIndex : 'N/A'}`);
-      console.log(`   价值: $${pos.value || pos.usdcValue || '0'}`);
+      console.log(`   当前价值: $${displayValue.toFixed(2)} USDC.e`);
+      if (initialValue > 0) {
+        console.log(`   初始价值: $${initialValue.toFixed(2)} USDC.e`);
+      }
+      if (pos.cashPnl !== undefined) {
+        const pnl = parseFloat(pos.cashPnl || '0');
+        console.log(`   盈亏: $${pnl.toFixed(2)} USDC.e (${((pnl / initialValue) * 100).toFixed(2)}%)`);
+      }
       console.log(`   状态: ✅ 已结算 (redeemable: ${pos.redeemable})`);
       console.log('');
     });
