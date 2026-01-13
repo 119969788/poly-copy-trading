@@ -157,28 +157,45 @@ async function main() {
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
       
       try {
+        // 获取 asset（tokenId），这是赎回时需要使用的
+        const asset = pos.asset || pos.tokenId || pos.outcomeTokenId;
         const conditionId = pos.conditionId || pos.market;
         
-        if (!conditionId) {
-          throw new Error('条件ID不存在');
+        if (!asset) {
+          throw new Error('代币ID（asset）不存在，无法赎回');
         }
+
+        console.log(`   使用 asset (tokenId): ${asset}`);
 
         // 尝试使用 SDK 的赎回方法
         // 注意：SDK 可能有不同的 API 方法名，这里尝试几种可能的方法
         let redeemResult: any = null;
         
         try {
-          // 方法1: 尝试 onchainService.redeem 或类似方法
+          // 方法1: 尝试使用 asset (tokenId) 作为参数
           if ((onchainService as any).redeem) {
-            redeemResult = await (onchainService as any).redeem(conditionId);
+            redeemResult = await (onchainService as any).redeem(asset);
           } else if ((onchainService as any).redeemTokens) {
-            redeemResult = await (onchainService as any).redeemTokens(conditionId);
+            redeemResult = await (onchainService as any).redeemTokens(asset);
           } else if ((onchainService as any).claimSettledTokens) {
-            redeemResult = await (onchainService as any).claimSettledTokens(conditionId);
+            redeemResult = await (onchainService as any).claimSettledTokens(asset);
           } else if ((sdk.tradingService as any).redeem) {
-            redeemResult = await (sdk.tradingService as any).redeem(conditionId);
+            redeemResult = await (sdk.tradingService as any).redeem(asset);
+          } else if ((sdk.tradingService as any).redeemTokens) {
+            redeemResult = await (sdk.tradingService as any).redeemTokens(asset);
           } else {
-            throw new Error('SDK 不支持赎回方法，请检查 SDK 文档');
+            // 如果使用 asset 的方法都不存在，尝试使用 conditionId
+            if ((onchainService as any).redeem) {
+              redeemResult = await (onchainService as any).redeem(conditionId);
+            } else if ((onchainService as any).redeemTokens) {
+              redeemResult = await (onchainService as any).redeemTokens(conditionId);
+            } else if ((onchainService as any).claimSettledTokens) {
+              redeemResult = await (onchainService as any).claimSettledTokens(conditionId);
+            } else if ((sdk.tradingService as any).redeem) {
+              redeemResult = await (sdk.tradingService as any).redeem(conditionId);
+            } else {
+              throw new Error('SDK 不支持赎回方法，请检查 SDK 文档');
+            }
           }
         } catch (apiError: any) {
           throw new Error(`赎回 API 调用失败: ${apiError?.message || apiError}`);
