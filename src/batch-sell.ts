@@ -65,12 +65,19 @@ async function main() {
 
     console.log(`\n找到 ${allPositions.length} 个持仓，其中 ${positions.length} 个有余额可卖出：\n`);
     
+    // 显示持仓信息（调试：打印第一个持仓的完整数据结构）
+    if (positions.length > 0) {
+      console.log('🔍 调试：第一个持仓的完整数据结构：');
+      console.log(JSON.stringify(positions[0], null, 2));
+      console.log('');
+    }
+    
     // 显示持仓信息
     positions.forEach((pos: any, index: number) => {
       console.log(`持仓 #${index + 1}:`);
       console.log(`   市场: ${pos.market || pos.conditionId || 'N/A'}`);
       console.log(`   条件ID: ${pos.conditionId || 'N/A'}`);
-      console.log(`   代币ID: ${pos.tokenId || pos.outcomeTokenId || 'N/A'}`);
+      console.log(`   代币ID: ${pos.tokenId || pos.outcomeTokenId || pos.token_id || pos.outcome_token_id || 'N/A'}`);
       console.log(`   数量: ${pos.size || pos.amount || pos.balance || '0'}`);
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
       console.log(`   价值: $${pos.value || pos.usdcValue || '0'}`);
@@ -101,17 +108,25 @@ async function main() {
       console.log(`卖出持仓 #${i + 1}/${positions.length}`);
       console.log(`   市场: ${pos.market || pos.conditionId || 'N/A'}`);
       console.log(`   条件ID: ${pos.conditionId || 'N/A'}`);
-      console.log(`   代币ID: ${pos.tokenId || pos.outcomeTokenId || 'N/A'}`);
+      console.log(`   代币ID: ${pos.tokenId || pos.outcomeTokenId || pos.token_id || pos.outcome_token_id || 'N/A'}`);
       console.log(`   数量: ${pos.size || pos.amount || pos.balance || '0'}`);
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
       
       try {
-        // 获取代币ID和数量
-        const tokenId = pos.tokenId || pos.outcomeTokenId;
+        // 获取代币ID和数量（尝试多个可能的字段名）
+        const tokenId = pos.tokenId || pos.outcomeTokenId || pos.token_id || pos.outcome_token_id;
         const amount = pos.size || pos.amount || pos.balance || '1';
         
         if (!tokenId) {
-          throw new Error('代币ID不存在');
+          console.log(`   ⚠️  警告：无法获取代币ID，跳过此持仓`);
+          console.log(`   💡 提示：请查看上方的调试信息，了解持仓数据结构`);
+          results.push({ 
+            success: false, 
+            position: pos, 
+            error: '代币ID不存在，持仓数据中可能使用了不同的字段名' 
+          });
+          console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+          continue;
         }
         
         // 尝试使用市场订单卖出
@@ -162,7 +177,9 @@ async function main() {
     if (failCount > 0) {
       console.log('\n失败的持仓：');
       results.filter(r => !r.success).forEach((r, i) => {
-        console.log(`   ${i + 1}. 代币ID: ${r.position.tokenId || 'N/A'}`);
+        console.log(`   ${i + 1}. 条件ID: ${r.position.conditionId || 'N/A'}`);
+        console.log(`      代币ID: ${r.position.tokenId || r.position.outcomeTokenId || r.position.token_id || r.position.outcome_token_id || 'N/A'}`);
+        console.log(`      方向: ${r.position.outcome || r.position.side || 'N/A'}`);
         console.log(`      错误: ${r.error}`);
       });
     }
