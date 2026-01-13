@@ -76,40 +76,63 @@ async function main() {
     console.log('🔍 正在尝试从市场信息中获取 tokenId...\n');
     const positionsWithTokenId = [];
     
-    for (const pos of positions) {
+    for (let idx = 0; idx < positions.length; idx++) {
+      const pos = positions[idx];
       let tokenId = pos.tokenId || pos.outcomeTokenId || pos.token_id || pos.outcome_token_id;
       
       // 如果 tokenId 不存在，尝试从市场信息中获取
       if (!tokenId && pos.conditionId) {
         try {
-          // 尝试使用 conditionId 作为 marketId 获取市场信息
           const marketId = pos.conditionId;
+          const outcome = pos.outcome || pos.side;
+          
+          console.log(`   处理持仓 #${idx + 1}: conditionId=${marketId.slice(0, 20)}..., outcome=${outcome}`);
           
           // 尝试获取市场信息（不同的 API 方法）
           let marketInfo: any = null;
+          let apiMethod = '';
           
           // 方法1: 尝试 getMarket
           try {
-            marketInfo = await (sdk.dataApi as any).getMarket?.(marketId);
-          } catch (e) {
-            // 忽略错误
+            if ((sdk.dataApi as any).getMarket) {
+              marketInfo = await (sdk.dataApi as any).getMarket(marketId);
+              apiMethod = 'getMarket';
+            }
+          } catch (e: any) {
+            console.log(`     getMarket 失败: ${e?.message || e}`);
           }
           
           // 方法2: 尝试 getMarketInfo
           if (!marketInfo) {
             try {
-              marketInfo = await (sdk.dataApi as any).getMarketInfo?.(marketId);
-            } catch (e) {
-              // 忽略错误
+              if ((sdk.dataApi as any).getMarketInfo) {
+                marketInfo = await (sdk.dataApi as any).getMarketInfo(marketId);
+                apiMethod = 'getMarketInfo';
+              }
+            } catch (e: any) {
+              console.log(`     getMarketInfo 失败: ${e?.message || e}`);
             }
           }
           
-          // 如果获取到市场信息，尝试从中提取 tokenId
+          // 方法3: 尝试 getMarketById
+          if (!marketInfo) {
+            try {
+              if ((sdk.dataApi as any).getMarketById) {
+                marketInfo = await (sdk.dataApi as any).getMarketById(marketId);
+                apiMethod = 'getMarketById';
+              }
+            } catch (e: any) {
+              console.log(`     getMarketById 失败: ${e?.message || e}`);
+            }
+          }
+          
           if (marketInfo) {
-            const outcome = pos.outcome || pos.side;
+            console.log(`     使用 ${apiMethod} 获取到市场信息`);
+            console.log(`     市场信息结构: ${Object.keys(marketInfo).join(', ')}`);
             
             // 尝试从 tokens 数组中查找
             if (marketInfo.tokens && Array.isArray(marketInfo.tokens)) {
+              console.log(`     找到 tokens 数组，长度: ${marketInfo.tokens.length}`);
               const token = marketInfo.tokens.find((t: any) => 
                 (t.outcome === outcome || t.side === outcome || t.name === outcome) ||
                 (outcome === 'Down' && (t.name === 'No' || t.outcome === 'No')) ||
@@ -117,24 +140,44 @@ async function main() {
               );
               if (token && (token.tokenId || token.id)) {
                 tokenId = token.tokenId || token.id;
+                console.log(`     ✅ 从 tokens 数组中找到 tokenId: ${tokenId}`);
+              } else {
+                console.log(`     ❌ tokens 数组中未找到匹配的 token (outcome: ${outcome})`);
               }
             }
             
             // 尝试从 outcomeTokens 对象中查找
             if (!tokenId && marketInfo.outcomeTokens) {
+              console.log(`     找到 outcomeTokens 对象`);
               const outcomeLower = outcome.toLowerCase();
-              if (marketInfo.outcomeTokens[outcomeLower] || 
-                  marketInfo.outcomeTokens[outcome] ||
-                  marketInfo.outcomeTokens[outcome === 'Down' ? 'no' : 'yes']) {
-                tokenId = marketInfo.outcomeTokens[outcomeLower] || 
-                         marketInfo.outcomeTokens[outcome] ||
-                         marketInfo.outcomeTokens[outcome === 'Down' ? 'no' : 'yes'];
+              const possibleKeys = [outcomeLower, outcome, outcome === 'Down' ? 'no' : 'yes', outcome === 'Down' ? 'No' : 'Yes'];
+              for (const key of possibleKeys) {
+                if (marketInfo.outcomeTokens[key]) {
+                  tokenId = marketInfo.outcomeTokens[key];
+                  console.log(`     ✅ 从 outcomeTokens 中找到 tokenId (key: ${key}): ${tokenId}`);
+                  break;
+                }
+              }
+              if (!tokenId) {
+                console.log(`     ❌ outcomeTokens 中未找到匹配的 token (尝试的键: ${possibleKeys.join(', ')})`);
               }
             }
+            
+            if (!tokenId) {
+              console.log(`     ❌ 无法从市场信息中提取 tokenId`);
+              console.log(`     调试：市场信息的完整结构（前500字符）:`);
+              console.log(JSON.stringify(marketInfo, null, 2).substring(0, 500));
+            }
+          } else {
+            console.log(`     ❌ 无法获取市场信息（尝试了 getMarket, getMarketInfo, getMarketById）`);
           }
-        } catch (error) {
-          // 忽略错误，继续使用原始数据
+        } catch (error: any) {
+          console.log(`     ❌ 获取 tokenId 时发生错误: ${error?.message || error}`);
         }
+      } else if (!tokenId) {
+        console.log(`   持仓 #${idx + 1}: 没有 conditionId，无法获取 tokenId`);
+      } else {
+        console.log(`   持仓 #${idx + 1}: 已有 tokenId: ${tokenId}`);
       }
       
       positionsWithTokenId.push({
@@ -142,6 +185,8 @@ async function main() {
         _resolvedTokenId: tokenId, // 保存解析到的 tokenId
       });
     }
+    
+    console.log('');
     
     // 显示持仓信息
     positionsWithTokenId.forEach((pos: any, index: number) => {
