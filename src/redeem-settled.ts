@@ -220,7 +220,8 @@ async function main() {
           
           // 检查是否是交易回退错误（可能表示代币无法赎回）
           if (errorMsg.includes('revert') || errorMsg.includes('INVALID') || errorMsg.includes('CALL_EXCEPTION') || errorMsg.includes('invalid opcode')) {
-            throw new Error(`赎回失败：交易被回退。这可能意味着：1) 该方向的代币无法赎回（市场结算结果不支持，你持有的是失败方向的代币），2) 代币已被赎回，或 3) 市场尚未完全结算。原始错误: ${errorMsg.substring(0, 150)}`);
+            // 这是一个预期的错误 - 持有失败方向的代币无法赎回
+            throw new Error(`无法赎回：该方向的代币无法赎回（可能持有的是失败方向的代币，只有获胜方向的代币才能赎回）`);
           } else {
             throw new Error(`赎回 API 调用失败: ${errorMsg.substring(0, 200)}`);
           }
