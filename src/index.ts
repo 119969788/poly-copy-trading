@@ -123,53 +123,119 @@ async function main() {
         console.log(`   USDC.e 余额: ${usdcBalance.toFixed(2)} USDC`);
         console.log(`   MATIC 余额: ${maticBalance.toFixed(4)} MATIC`);
         
-        if (usdcBalance < 1) {
+        if (usdcBalance < 10) {
           console.warn('⚠️  警告: USDC.e 余额不足，建议至少 $10 USDC');
+          console.warn('   当前余额可能不足以执行交易');
+        } else if (usdcBalance < 50) {
+          console.warn('⚠️  提示: USDC.e 余额较低，建议保持至少 $50-100 USDC');
+        } else {
+          console.log('✅ USDC.e 余额充足');
         }
+        
         if (maticBalance < 0.01) {
-          console.warn('⚠️  警告: MATIC 余额不足，需要 Gas 费进行交易');
+          console.error('❌ 错误: MATIC 余额不足，无法支付 Gas 费');
+          console.error('   请向钱包充值 MATIC（建议至少 0.1 MATIC）');
+        } else if (maticBalance < 0.1) {
+          console.warn('⚠️  警告: MATIC 余额较低，建议至少 0.1 MATIC');
+        } else {
+          console.log('✅ MATIC 余额充足');
         }
       } catch (error: any) {
         console.error('⚠️  余额检查失败:', error?.message || error);
+        console.error('   请手动检查钱包余额');
       }
       console.log('');
     } else {
-      console.log('💰 跳过余额检查\n');
+      console.log('💰 跳过余额检查（已设置 SKIP_BALANCE_CHECK=true）\n');
+      console.log('⚠️  警告：如果出现 "not enough balance" 错误，请检查钱包余额\n');
     }
 
     // 检查并授权 USDC.e（可选）
     if (!skipApprovalCheck) {
       console.log('🔐 正在检查并授权 USDC.e...');
-      try {
-        const status = await onchainService.checkReadyForCTF('100');
-        if (!status.ready) {
-          console.log('⚠️  需要授权，问题:', status.issues);
-          console.log('正在授权 USDC.e...');
-          const result = await onchainService.approveAll();
-          console.log('✅ 授权完成');
-          const totalApprovals = (result.erc20Approvals?.length || 0) + (result.erc1155Approvals?.length || 0);
-          if (totalApprovals > 0) {
-            console.log(`   已授权 ${totalApprovals} 个代币`);
-          }
-          console.log(`   摘要: ${result.summary || '授权成功'}`);
-          console.log('   请等待交易确认（约 5-10 秒）...\n');
+      let authorizationSuccess = false;
+      let retryCount = 0;
+      const maxRetries = 3;
+      
+      while (!authorizationSuccess && retryCount < maxRetries) {
+        try {
+          // 检查授权状态（使用较大的金额以确保授权足够）
+          const status = await onchainService.checkReadyForCTF('10000');
           
-          // 等待交易确认
-          await new Promise(resolve => setTimeout(resolve, 8000));
-        } else {
-          console.log('✅ USDC.e 已授权\n');
-        }
-      } catch (error: any) {
-        console.error('⚠️  授权失败:', error?.message || error);
-        if (error?.message?.includes('user rejected') || error?.message?.includes('denied')) {
-          console.error('❌ 授权被拒绝，请手动授权或重试');
-          console.error('   可以在 Polymarket 网站上手动授权 USDC.e\n');
-        } else {
-          console.log('   如果已经授权过，可以忽略此错误\n');
+          if (!status.ready) {
+            console.log(`⚠️  需要授权（尝试 ${retryCount + 1}/${maxRetries}）`);
+            if (status.issues && status.issues.length > 0) {
+              console.log(`   问题: ${status.issues.join(', ')}`);
+            }
+            
+            console.log('正在授权 USDC.e...');
+            const result = await onchainService.approveAll();
+            
+            console.log('✅ 授权交易已提交');
+            const totalApprovals = (result.erc20Approvals?.length || 0) + (result.erc1155Approvals?.length || 0);
+            if (totalApprovals > 0) {
+              console.log(`   已授权 ${totalApprovals} 个代币`);
+            }
+            if (result.summary) {
+              console.log(`   摘要: ${result.summary}`);
+            }
+            
+            // 等待交易确认（增加等待时间）
+            console.log('   等待交易确认（约 10-15 秒）...');
+            await new Promise(resolve => setTimeout(resolve, 12000));
+            
+            // 再次检查授权状态，确认授权成功
+            console.log('   验证授权状态...');
+            const verifyStatus = await onchainService.checkReadyForCTF('10000');
+            if (verifyStatus.ready) {
+              authorizationSuccess = true;
+              console.log('✅ USDC.e 授权验证成功\n');
+            } else {
+              retryCount++;
+              if (retryCount < maxRetries) {
+                console.log(`⚠️  授权验证失败，将在 ${5 * retryCount} 秒后重试...\n`);
+                await new Promise(resolve => setTimeout(resolve, 5000 * retryCount));
+              } else {
+                console.error('❌ 授权验证失败，已达到最大重试次数');
+                console.error('   请检查：');
+                console.error('   1. 钱包余额是否足够（需要 USDC.e 和 MATIC）');
+                console.error('   2. 网络连接是否正常');
+                console.error('   3. 可以在 Polymarket 网站上手动授权 USDC.e\n');
+              }
+            }
+          } else {
+            authorizationSuccess = true;
+            console.log('✅ USDC.e 已授权\n');
+          }
+        } catch (error: any) {
+          retryCount++;
+          const errorMsg = error?.message || String(error);
+          console.error(`⚠️  授权失败（尝试 ${retryCount}/${maxRetries}）:`, errorMsg);
+          
+          if (errorMsg.includes('user rejected') || errorMsg.includes('denied')) {
+            console.error('❌ 授权被拒绝，请手动授权或重试');
+            console.error('   可以在 Polymarket 网站上手动授权 USDC.e\n');
+            break; // 用户拒绝，不再重试
+          } else if (retryCount < maxRetries) {
+            console.log(`   将在 ${5 * retryCount} 秒后重试...\n`);
+            await new Promise(resolve => setTimeout(resolve, 5000 * retryCount));
+          } else {
+            console.error('❌ 授权失败，已达到最大重试次数');
+            console.error('   如果已经授权过，可以设置 SKIP_APPROVAL_CHECK=true 跳过检查\n');
+          }
         }
       }
+      
+      if (!authorizationSuccess && !skipApprovalCheck) {
+        console.error('⚠️  警告：授权未成功，交易可能会失败');
+        console.error('   建议：');
+        console.error('   1. 检查钱包余额（USDC.e 和 MATIC）');
+        console.error('   2. 手动在 Polymarket 网站上授权 USDC.e');
+        console.error('   3. 或设置 SKIP_APPROVAL_CHECK=true 跳过检查（不推荐）\n');
+      }
     } else {
-      console.log('🔐 跳过授权检查\n');
+      console.log('🔐 跳过授权检查（已设置 SKIP_APPROVAL_CHECK=true）\n');
+      console.log('⚠️  警告：如果出现 "not enough balance / allowance" 错误，请检查授权状态\n');
     }
 
     // 准备跟单选项
