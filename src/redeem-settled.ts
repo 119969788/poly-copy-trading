@@ -70,39 +70,43 @@ async function main() {
     const redeemablePositions: any[] = [];
     
     for (const pos of positions) {
-      try {
+      // 直接使用持仓数据中的 redeemable 字段判断（最可靠的方法）
+      const isRedeemable = pos.redeemable === true;
+      
+      // 如果没有 redeemable 字段，尝试其他判断方法
+      if (!isRedeemable) {
+        // 尝试从市场信息中获取（备用方法）
         const conditionId = pos.conditionId || pos.market;
         
-        if (!conditionId) {
-          continue;
-        }
+        if (conditionId) {
+          try {
+            let marketInfo: any = null;
+            
+            try {
+              marketInfo = await (sdk.dataApi as any).getMarket?.(conditionId) ||
+                          await (sdk.dataApi as any).getMarketInfo?.(conditionId);
+            } catch (e) {
+              // 忽略错误
+            }
 
-        // 尝试获取市场信息以检查是否已结算
-        let marketInfo: any = null;
-        
-        try {
-          // 尝试不同的 API 方法获取市场信息
-          marketInfo = await (sdk.dataApi as any).getMarket?.(conditionId) ||
-                      await (sdk.dataApi as any).getMarketInfo?.(conditionId);
-        } catch (e) {
-          // 忽略错误，继续处理下一个
-          continue;
+            // 检查市场是否已结算
+            const isSettled = marketInfo?.resolved === true || 
+                             marketInfo?.settled === true ||
+                             (marketInfo?.endDate && new Date(marketInfo.endDate) < new Date());
+            
+            if (isSettled) {
+              redeemablePositions.push({
+                ...pos,
+                marketInfo,
+              });
+            }
+          } catch (error) {
+            // 忽略错误，继续处理下一个持仓
+          }
         }
-
-        // 检查市场是否已结算
-        // 已结算的市场通常有 resolved 或 settled 字段，或者 endDate 已过期
-        const isSettled = marketInfo?.resolved === true || 
-                         marketInfo?.settled === true ||
-                         (marketInfo?.endDate && new Date(marketInfo.endDate) < new Date());
-
-        if (isSettled) {
-          redeemablePositions.push({
-            ...pos,
-            marketInfo,
-          });
-        }
-      } catch (error) {
-        // 忽略错误，继续处理下一个持仓
+      } else {
+        // redeemable 为 true，直接添加到可回收列表
+        redeemablePositions.push(pos);
       }
     }
 
