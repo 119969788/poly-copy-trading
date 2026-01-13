@@ -105,9 +105,21 @@ async function main() {
           }
         }
       } else {
-        // redeemable 为 true，直接添加到可回收列表
+        // redeemable 为 true，添加到可回收列表
+        // 注意：redeemable: true 只表示市场已结算，但不代表该方向的代币可以赎回
+        // 只有获胜方向的代币才能赎回，失败方向的代币无法赎回
         redeemablePositions.push(pos);
       }
+    }
+    
+    // 重要提示
+    if (redeemablePositions.length > 0) {
+      console.log('⚠️  重要提示：');
+      console.log('   redeemable: true 只表示市场已结算，但不代表该方向的代币可以赎回');
+      console.log('   在 Polymarket 中，只有持有获胜方向的代币才能赎回（1:1 兑换成 USDC.e）');
+      console.log('   失败方向的代币无法赎回，价值归零');
+      console.log('   脚本会尝试赎回所有 redeemable: true 的持仓');
+      console.log('   如果赎回失败，说明持有的是失败方向的代币（这是正常情况）\n');
     }
 
     if (redeemablePositions.length === 0) {
