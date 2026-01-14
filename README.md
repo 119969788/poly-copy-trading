@@ -60,15 +60,30 @@ pnpm dev
 如果需要批量出售所有持仓的代币：
 
 ```bash
-# 模拟模式（推荐先测试）
-pnpm batch-sell
+# 模拟模式（推荐先测试）- 不会真实出售
+npx tsx src/batch-sell.ts
 
 # 实盘模式（真实出售）
-pnpm batch-sell-real
+npx tsx src/batch-sell.ts --real
 
-# 自定义参数
-pnpm batch-sell --min-price 0.1 --max-slippage 0.05 --delay 2000
+# 只出售高价代币（>= $0.1）
+npx tsx src/batch-sell.ts --real --min-price 0.1
+
+# 自定义参数（实盘模式 + 最小价格 + 滑点 + 延迟）
+npx tsx src/batch-sell.ts --real --min-price 0.1 --max-slippage 0.05 --delay 2000
+
+# 使用 pnpm 脚本
+pnpm batch-sell        # 模拟模式
+pnpm batch-sell-real   # 实盘模式
 ```
+
+**参数说明**：
+- `--real` : 实盘模式（真实出售）
+- `--min-price <价格>` : 最小出售价格（例如：0.1）
+- `--max-slippage <滑点>` : 最大滑点（例如：0.05 = 5%）
+- `--delay <毫秒>` : 交易延迟（例如：2000 = 2秒）
+
+详细命令参考：查看 `BATCH_SELL_COMMANDS.md` 或 `QUICK_COMMANDS.md`
 
 ## 使用说明
 

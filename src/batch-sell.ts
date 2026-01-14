@@ -1,4 +1,4 @@
-// 尝试多种导入方式以兼容不同的 SDK 版本
+import { PolySDK } from '@catalyst-team/poly-sdk';
 import dotenv from 'dotenv';
 
 // 加载环境变量
@@ -14,37 +14,8 @@ if (!privateKey) {
 // 解析 dryRun 设置
 const dryRun = process.env.DRY_RUN !== 'false';
 
-// 初始化 SDK（尝试多种导入方式）
-let sdk: any;
-
-try {
-  // 方式 1: 尝试 named export
-  const { PolySDK } = await import('@catalyst-team/poly-sdk');
-  sdk = new PolySDK({ privateKey });
-} catch (error1: any) {
-  try {
-    // 方式 2: 尝试 default export
-    const sdkModule = await import('@catalyst-team/poly-sdk');
-    const PolySDK = sdkModule.default || sdkModule;
-    sdk = new PolySDK({ privateKey });
-  } catch (error2: any) {
-    try {
-      // 方式 3: 尝试直接导入整个模块
-      const sdkModule = await import('@catalyst-team/poly-sdk');
-      sdk = new sdkModule({ privateKey });
-    } catch (error3: any) {
-      console.error('❌ SDK 导入失败，尝试了多种方式：');
-      console.error('   方式 1 (named export):', error1?.message);
-      console.error('   方式 2 (default export):', error2?.message);
-      console.error('   方式 3 (direct import):', error3?.message);
-      console.error('\n   请检查：');
-      console.error('   1. @catalyst-team/poly-sdk 是否正确安装');
-      console.error('   2. 运行: pnpm install 或 npm install');
-      console.error('   3. 检查 SDK 版本是否与主文件 index.ts 使用的版本一致');
-      process.exit(1);
-    }
-  }
-}
+// 初始化 SDK（使用与主文件相同的导入方式）
+const sdk = new PolySDK({ privateKey });
 
 // 批量出售配置
 interface BatchSellOptions {
@@ -119,17 +90,46 @@ async function batchSellTokens(options: BatchSellOptions = {}) {
     // 遍历并出售每个持仓
     for (let i = 0; i < positions.length; i++) {
       const position = positions[i];
-      const tokenId = position.tokenId || position.id;
       const marketId = position.marketId || position.market;
+      const conditionId = position.conditionId || position.condition || marketId;
+      let tokenId = position.tokenId || position.id || position.positionId || position.collectionId;
+      const direction = position.direction || position.outcome || position.side;
       const amount = parseFloat(position.amount || position.balance || '0');
       const price = parseFloat(position.price || position.currentPrice || '0');
 
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log(`📈 持仓 #${i + 1}/${positions.length}`);
       console.log(`   市场: ${marketId || 'N/A'}`);
+      if (conditionId) {
+        console.log(`   条件ID: ${conditionId}`);
+      }
+      if (direction) {
+        console.log(`   方向: ${direction}`);
+      }
       console.log(`   代币ID: ${tokenId || 'N/A'}`);
       console.log(`   数量: ${amount}`);
       console.log(`   当前价格: $${price.toFixed(4)}`);
+
+      // 如果 tokenId 不存在，打印调试信息并跳过
+      if (!tokenId) {
+        // 打印完整数据结构（仅第一个用于调试）
+        if (i === 0) {
+          console.log(`   ⚠️  调试信息（第一个持仓的完整数据）:`);
+          try {
+            const positionStr = JSON.stringify(position, null, 2);
+            console.log(`   ${positionStr.substring(0, 800)}${positionStr.length > 800 ? '...' : ''}`);
+          } catch (e) {
+            console.log(`   无法序列化持仓数据`);
+          }
+        }
+        
+        console.log(`   ⏭️  跳过：代币ID不存在，无法出售`);
+        console.log(`   提示：持仓数据中缺少 tokenId/positionId/collectionId 字段`);
+        console.log(`   建议：检查 SDK 版本或使用不同的获取持仓方法`);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+        failCount++;
+        continue;
+      }
 
       // 检查最小价格
       if (minPrice > 0 && price < minPrice) {

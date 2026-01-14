@@ -7,6 +7,9 @@ node_modules/
 .env.local
 .env.*.local
 
+# API 凭证
+.api-credentials.json
+
 # 构建输出
 dist/
 build/

@@ -1,0 +1,135 @@
+# ============================================
+# 快速安装命令 - 109.176.207.148
+# ============================================
+# 
+# 服务器信息：
+# IP: 109.176.207.148
+# 用户: root
+# 密码: $Sun3034197*
+#
+# ============================================
+
+# ============================================
+# 方法 1：SSH 连接后执行（推荐）
+# ============================================
+#
+# 1. 连接到服务器
+ssh root@109.176.207.148
+# 输入密码: $Sun3034197*
+#
+# 2. 执行以下命令（复制粘贴）：
+#
+apt update && apt upgrade -y
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt install -y nodejs git
+npm install -g pnpm pm2
+cd /root
+git clone https://github.com/119969788/poly-copy-trading.git
+cd poly-copy-trading
+pnpm install
+cp env.example.txt .env
+nano .env  # 添加私钥后保存
+#
+# 3. 测试运行
+npx tsx src/index.ts  # 按 Ctrl+C 停止
+#
+# 4. 启动 PM2
+pm2 start ecosystem.config.cjs
+pm2 save
+pm2 startup  # 按照提示执行命令
+#
+# ============================================
+
+# ============================================
+# 方法 2：使用 PowerShell 脚本（本地执行）
+# ============================================
+#
+# 在本地 PowerShell 中执行：
+#
+cd D:\000\poly-copy-trading-main
+.\远程安装脚本.ps1
+#
+# ============================================
+
+# ============================================
+# 方法 3：分步执行（如果遇到问题）
+# ============================================
+#
+# 连接到服务器后，逐步执行：
+#
+# 步骤 1：更新系统
+apt update && apt upgrade -y
+#
+# 步骤 2：安装 Node.js
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt install -y nodejs
+node --version  # 验证安装
+#
+# 步骤 3：安装 pnpm 和 PM2
+npm install -g pnpm pm2
+pnpm --version  # 验证
+pm2 --version   # 验证
+#
+# 步骤 4：安装 Git
+apt install -y git
+#
+# 步骤 5：克隆仓库
+cd /root
+git clone https://github.com/119969788/poly-copy-trading.git
+cd poly-copy-trading
+#
+# 步骤 6：安装依赖
+pnpm install
+#
+# 步骤 7：配置环境变量
+cp env.example.txt .env
+nano .env
+# 添加: POLYMARKET_PRIVATE_KEY=your_private_key
+# 保存: Ctrl+O, Enter, Ctrl+X
+#
+# 步骤 8：测试运行
+npx tsx src/index.ts
+# 按 Ctrl+C 停止
+#
+# 步骤 9：启动 PM2
+pm2 start ecosystem.config.cjs
+pm2 status
+pm2 logs poly-copy-trading
+#
+# 步骤 10：设置开机自启
+pm2 save
+pm2 startup
+# 按照提示执行命令
+#
+# ============================================
+
+# ============================================
+# 验证安装
+# ============================================
+#
+# 在服务器上执行：
+#
+node --version    # 应该显示 v20.x.x
+pnpm --version    # 应该显示版本号
+pm2 --version     # 应该显示版本号
+pm2 status        # 应该看到 poly-copy-trading 进程
+#
+# ============================================
+
+# ============================================
+# 常用管理命令
+# ============================================
+#
+# 查看状态
+pm2 status
+#
+# 查看日志
+pm2 logs poly-copy-trading
+#
+# 重启
+pm2 restart poly-copy-trading
+#
+# 停止
+pm2 stop poly-copy-trading
+#
+# ============================================
