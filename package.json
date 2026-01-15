@@ -12,6 +12,7 @@
     "batch-sell": "tsx src/batch-sell.ts",
     "dip-arb": "tsx src/dip-arb-15m.ts",
     "redeem": "tsx src/redeem-settled.ts",
+    "redeem-tokens": "tsx src/redeem-tokens.ts",
     "approve": "tsx src/approve-contract.ts",
     "modify-params": "tsx src/modify-params.ts"
   },
