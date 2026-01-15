@@ -5,9 +5,31 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 // 获取配置
-const privateKey = process.env.POLYMARKET_PRIVATE_KEY;
+let privateKey = process.env.POLYMARKET_PRIVATE_KEY;
 if (!privateKey) {
   console.error('❌ 错误：请在 .env 文件中设置 POLYMARKET_PRIVATE_KEY');
+  process.exit(1);
+}
+
+// 清理私钥：去除空格、换行符，处理 0x 前缀
+privateKey = privateKey.trim().replace(/\s+/g, '');
+
+// 如果私钥以 0x 开头，去除它（SDK 会自动添加）
+if (privateKey.startsWith('0x') || privateKey.startsWith('0X')) {
+  privateKey = privateKey.slice(2);
+}
+
+// 验证私钥长度（应该是 64 个十六进制字符，即 32 字节）
+if (privateKey.length !== 64) {
+  console.error(`❌ 错误：私钥长度不正确。期望 64 个字符（32 字节），实际 ${privateKey.length} 个字符`);
+  console.error('   请检查 .env 文件中的 POLYMARKET_PRIVATE_KEY 是否正确');
+  process.exit(1);
+}
+
+// 验证私钥格式（只包含十六进制字符）
+if (!/^[0-9a-fA-F]+$/.test(privateKey)) {
+  console.error('❌ 错误：私钥格式不正确，应只包含十六进制字符（0-9, a-f, A-F）');
+  console.error('   请检查 .env 文件中的 POLYMARKET_PRIVATE_KEY 是否正确');
   process.exit(1);
 }
 
