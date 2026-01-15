@@ -104,17 +104,80 @@ async function main() {
       return;
     }
 
-    // 显示持仓信息
-    console.log('📋 可赎回持仓列表：\n');
-    positions.forEach((pos: any, index: number) => {
+    // 显示持仓信息并检查获胜状态
+    console.log('📋 正在检查持仓获胜状态...\n');
+    const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
+    const positionStatuses: Array<{ position: any; isWinning: boolean; payout: string; payoutRatio: number }> = [];
+    
+    for (const pos of positions) {
+      const conditionId = pos.conditionId;
+      const outcomeIndex = pos.outcomeIndex;
       const size = parseFloat(pos.size || pos.amount || pos.balance || '0');
-      console.log(`持仓 #${index + 1}:`);
+      
+      let isWinning = false;
+      let payout = '0';
+      let payoutRatio = 0;
+      
+      if (conditionId && outcomeIndex !== undefined) {
+        try {
+          const normalizedConditionId = normalizeConditionId(conditionId);
+          const numerator = await ctf.payoutNumerator(normalizedConditionId, outcomeIndex);
+          const denominator = await ctf.payoutDenominator(normalizedConditionId);
+          
+          if (!numerator.eq(0)) {
+            isWinning = true;
+            const payoutBigInt = numerator.mul(ethers.parseEther('1')).div(denominator);
+            payout = ethers.formatEther(payoutBigInt);
+            payoutRatio = parseFloat(payout);
+          }
+        } catch (error) {
+          // 检查失败，标记为未知状态
+        }
+      }
+      
+      positionStatuses.push({ position: pos, isWinning, payout, payoutRatio });
+    }
+    
+    // 显示持仓列表
+    console.log('📋 可赎回持仓列表：\n');
+    positionStatuses.forEach((status, index) => {
+      const pos = status.position;
+      const size = parseFloat(pos.size || pos.amount || pos.balance || '0');
+      const statusIcon = status.isWinning ? '✅' : '❌';
+      const statusText = status.isWinning ? '获胜' : '失败';
+      
+      console.log(`持仓 #${index + 1}: ${statusIcon} ${statusText}`);
       console.log(`   条件ID: ${pos.conditionId || 'N/A'}`);
       console.log(`   数量: ${size.toFixed(4)}`);
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
       console.log(`   方向索引: ${pos.outcomeIndex !== undefined ? pos.outcomeIndex : 'N/A'}`);
+      if (status.isWinning) {
+        console.log(`   Payout 比例: ${status.payoutRatio.toFixed(4)} (${(status.payoutRatio * 100).toFixed(2)}%)`);
+        console.log(`   预计回收: $${(size * status.payoutRatio).toFixed(2)} USDC.e`);
+      } else {
+        console.log(`   Payout: 0 (无法回收)`);
+      }
       console.log('');
     });
+    
+    // 显示统计
+    const winningCount = positionStatuses.filter(s => s.isWinning).length;
+    const losingCount = positionStatuses.filter(s => !s.isWinning).length;
+    const totalWinningValue = positionStatuses
+      .filter(s => s.isWinning)
+      .reduce((sum, s) => {
+        const size = parseFloat(s.position.size || s.position.amount || s.position.balance || '0');
+        return sum + (size * s.payoutRatio);
+      }, 0);
+    
+    console.log('📊 持仓统计：');
+    console.log(`   总持仓数: ${positions.length}`);
+    console.log(`   ✅ 获胜持仓: ${winningCount}`);
+    console.log(`   ❌ 失败持仓: ${losingCount}`);
+    if (winningCount > 0) {
+      console.log(`   预计总回收: $${totalWinningValue.toFixed(2)} USDC.e`);
+    }
+    console.log('');
 
     if (dryRun) {
       console.log('🔍 模拟模式：不会执行真实回收\n');
@@ -122,15 +185,21 @@ async function main() {
       return;
     }
 
-    // 准备 batch transactions
-    console.log('🔄 正在准备批量交易...\n');
+    // 准备 batch transactions（只处理获胜的持仓）
+    console.log('🔄 正在准备批量交易（仅获胜持仓）...\n');
     const transactions: any[] = [];
-    const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
     const skippedPositions: any[] = [];
 
-    for (const pos of positions) {
+    for (const status of positionStatuses) {
+      const pos = status.position;
       const conditionId = pos.conditionId;
-      const outcomeIndex = pos.outcomeIndex; // 0 或 1
+      const outcomeIndex = pos.outcomeIndex;
+      
+      // 只处理获胜的持仓
+      if (!status.isWinning) {
+        skippedPositions.push({ ...pos, reason: '失败方向（payout=0）' });
+        continue;
+      }
       
       if (!conditionId) {
         console.log(`⚠️  跳过持仓：缺少 conditionId`);
@@ -141,25 +210,11 @@ async function main() {
       // 规范化 conditionId
       const normalizedConditionId = normalizeConditionId(conditionId);
       
-      // 对于二进制市场：outcomeIndex 0=Up ([2]), 1=Down ([1])
-      // 但为了安全，我们使用 [1,2] 批量处理所有方向
+      // 对于二进制市场：使用 [1,2] 批量处理所有方向
       // 只有获胜方向的代币会被赎回，失败方向的会被忽略
       const indexSets = [1, 2]; // 批量处理 YES 和 NO
 
       try {
-        // 检查 payout，避免对 payout=0 的赎回
-        const numerator = await ctf.payoutNumerator(normalizedConditionId, outcomeIndex);
-        const denominator = await ctf.payoutDenominator(normalizedConditionId);
-        
-        if (numerator.eq(0)) {
-          console.log(`⚠️  跳过 ${conditionId.substring(0, 10)}...：payout=0 (失败方向)`);
-          skippedPositions.push({ ...pos, reason: 'payout=0 (失败方向)' });
-          continue;
-        }
-        
-        const payout = numerator.mul(ethers.parseEther('1')).div(denominator);
-        console.log(`✅ 持仓 ${conditionId.substring(0, 10)}... payout=${ethers.formatEther(payout)} (获胜方向)`);
-
         // 编码 redeem data
         const data = ctf.interface.encodeFunctionData('redeemPositions', [
           USDC_ADDRESS,
@@ -174,9 +229,12 @@ async function main() {
           data,
           operation: 0 // Call
         });
+        
+        const size = parseFloat(pos.size || pos.amount || pos.balance || '0');
+        console.log(`✅ 已添加: ${conditionId.substring(0, 10)}... (预计回收 $${(size * status.payoutRatio).toFixed(2)})`);
       } catch (error: any) {
         console.log(`⚠️  跳过 ${conditionId.substring(0, 10)}...：${error?.message || error}`);
-        skippedPositions.push({ ...pos, reason: error?.message || '检查 payout 失败' });
+        skippedPositions.push({ ...pos, reason: error?.message || '编码交易失败' });
       }
     }
 
