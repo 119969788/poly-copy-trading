@@ -1,8 +1,16 @@
 import { PolymarketSDK, OnchainService } from '@catalyst-team/poly-sdk';
+import { ethers } from 'ethers';
 import dotenv from 'dotenv';
 
 // 加载环境变量
 dotenv.config();
+
+// CTF 合约地址和 ABI
+const CTF_ADDRESS = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
+const CTF_ABI = [
+  'function payoutNumerator(bytes32 conditionId, uint256 outcomeIndex) view returns (uint256)',
+  'function payoutDenominator(bytes32 conditionId) view returns (uint256)'
+];
 
 // 获取配置
 const privateKey = process.env.POLYMARKET_PRIVATE_KEY;
@@ -19,6 +27,51 @@ function printBanner() {
   console.log('\n═══════════════════════════════════════════════════');
   console.log('   Polymarket 回收结算代币工具');
   console.log('═══════════════════════════════════════════════════\n');
+}
+
+// 将 conditionId 转换为 bytes32 格式
+function normalizeConditionId(conditionId: string): string {
+  let normalized = conditionId.trim();
+  
+  if (normalized.startsWith('0x') || normalized.startsWith('0X')) {
+    normalized = normalized.slice(2);
+  }
+  
+  if (normalized.length < 64) {
+    normalized = normalized.padStart(64, '0');
+  } else if (normalized.length > 64) {
+    normalized = normalized.slice(0, 64);
+  }
+  
+  return '0x' + normalized.toLowerCase();
+}
+
+// 检查持仓是否获胜
+async function checkWinningStatus(
+  provider: ethers.Provider,
+  conditionId: string,
+  outcomeIndex: number
+): Promise<{ isWinning: boolean; payoutRatio: number; payout: string }> {
+  try {
+    const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
+    const normalizedConditionId = normalizeConditionId(conditionId);
+    
+    const numerator = await ctf.payoutNumerator(normalizedConditionId, outcomeIndex);
+    const denominator = await ctf.payoutDenominator(normalizedConditionId);
+    
+    if (numerator.eq(0)) {
+      return { isWinning: false, payoutRatio: 0, payout: '0' };
+    }
+    
+    const payoutBigInt = numerator.mul(ethers.parseEther('1')).div(denominator);
+    const payout = ethers.formatEther(payoutBigInt);
+    const payoutRatio = parseFloat(payout);
+    
+    return { isWinning: true, payoutRatio, payout };
+  } catch (error) {
+    // 检查失败，返回未知状态
+    return { isWinning: false, payoutRatio: 0, payout: '0' };
+  }
 }
 
 // 主函数
@@ -42,6 +95,9 @@ async function main() {
     // 获取钱包地址
     const walletAddress = sdk.tradingService.getAddress();
     console.log(`钱包地址: ${walletAddress}\n`);
+
+    // 初始化 provider（用于检查获胜状态）
+    const provider = new ethers.JsonRpcProvider(process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com');
 
     // 获取持仓
     console.log('📊 正在获取持仓信息...');
@@ -130,28 +186,49 @@ async function main() {
 
     console.log(`找到 ${redeemablePositions.length} 个已结算市场的持仓：\n`);
 
+    // 检查持仓获胜状态
+    console.log('📋 正在检查持仓获胜状态...\n');
+    const positionStatuses: Array<{ position: any; isWinning: boolean; payoutRatio: number; payout: string }> = [];
+    
+    for (const pos of redeemablePositions) {
+      const conditionId = pos.conditionId;
+      const outcomeIndex = pos.outcomeIndex;
+      
+      let status = { isWinning: false, payoutRatio: 0, payout: '0' };
+      
+      if (conditionId && outcomeIndex !== undefined) {
+        status = await checkWinningStatus(provider, conditionId, outcomeIndex);
+      }
+      
+      positionStatuses.push({ position: pos, ...status });
+    }
+
     // 显示可回收的持仓
-    redeemablePositions.forEach((pos: any, index: number) => {
-      console.log(`持仓 #${index + 1}:`);
-      console.log(`   市场: ${pos.market || pos.conditionId || 'N/A'}`);
-      console.log(`   条件ID: ${pos.conditionId || 'N/A'}`);
-      console.log(`   代币ID (asset): ${pos.asset || 'N/A'}`);
+    console.log('📋 可赎回持仓列表：\n');
+    positionStatuses.forEach((status, index) => {
+      const pos = status.position;
       const size = parseFloat(pos.size || pos.amount || pos.balance || '0');
       const currentValue = parseFloat(pos.currentValue || pos.value || pos.usdcValue || '0');
       const initialValue = parseFloat(pos.initialValue || '0');
       
-      // 对于已结算且可赎回的代币，价值应该是数量（可以 1:1 赎回成 USDC.e）
-      // 对于已结算但不可赎回的代币，价值是 0
-      let displayValue = currentValue;
-      if (pos.redeemable && size > 0) {
-        // 可赎回的代币，价值应该是数量（1:1 兑换）
-        displayValue = size;
-      }
+      const statusIcon = status.isWinning ? '✅' : '❌';
+      const statusText = status.isWinning ? '获胜' : '失败';
       
+      console.log(`持仓 #${index + 1}: ${statusIcon} ${statusText}`);
+      console.log(`   市场: ${pos.market || pos.conditionId || 'N/A'}`);
+      console.log(`   条件ID: ${pos.conditionId || 'N/A'}`);
+      console.log(`   代币ID (asset): ${pos.asset || 'N/A'}`);
       console.log(`   数量: ${size.toFixed(4)}`);
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
       console.log(`   方向索引: ${pos.outcomeIndex !== undefined ? pos.outcomeIndex : 'N/A'}`);
-      console.log(`   当前价值: $${displayValue.toFixed(2)} USDC.e`);
+      
+      if (status.isWinning) {
+        console.log(`   Payout 比例: ${status.payoutRatio.toFixed(4)} (${(status.payoutRatio * 100).toFixed(2)}%)`);
+        console.log(`   预计回收: $${(size * status.payoutRatio).toFixed(2)} USDC.e`);
+      } else {
+        console.log(`   Payout: 0 (无法回收)`);
+      }
+      
       if (initialValue > 0) {
         console.log(`   初始价值: $${initialValue.toFixed(2)} USDC.e`);
       }
@@ -162,6 +239,25 @@ async function main() {
       console.log(`   状态: ✅ 已结算 (redeemable: ${pos.redeemable})`);
       console.log('');
     });
+
+    // 显示统计
+    const winningCount = positionStatuses.filter(s => s.isWinning).length;
+    const losingCount = positionStatuses.filter(s => !s.isWinning).length;
+    const totalWinningValue = positionStatuses
+      .filter(s => s.isWinning)
+      .reduce((sum, s) => {
+        const size = parseFloat(s.position.size || s.position.amount || s.position.balance || '0');
+        return sum + (size * s.payoutRatio);
+      }, 0);
+    
+    console.log('📊 持仓统计：');
+    console.log(`   总持仓数: ${redeemablePositions.length}`);
+    console.log(`   ✅ 获胜持仓: ${winningCount}`);
+    console.log(`   ❌ 失败持仓: ${losingCount}`);
+    if (winningCount > 0) {
+      console.log(`   预计总回收: $${totalWinningValue.toFixed(2)} USDC.e`);
+    }
+    console.log('');
 
     if (dryRun) {
       console.log('🔍 模拟模式：不会执行真实回收\n');
