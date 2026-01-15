@@ -271,19 +271,32 @@ async function main() {
     console.log(`   可回收持仓数量: ${redeemablePositions.length}`);
     console.log('');
     
-    // 批量回收
-    console.log('🔄 开始批量回收...\n');
+    // 批量回收（只处理获胜的持仓）
+    console.log('🔄 开始批量回收（仅获胜持仓）...\n');
+    
+    // 过滤出只有获胜的持仓
+    const winningPositions = positionStatuses.filter(s => s.isWinning);
+    
+    if (winningPositions.length === 0) {
+      console.log('❌ 没有获胜的持仓需要回收\n');
+      console.log('💡 提示：所有持仓都是失败方向，无法回收\n');
+      return;
+    }
+    
+    console.log(`准备回收 ${winningPositions.length} 个获胜持仓（跳过 ${positionStatuses.length - winningPositions.length} 个失败持仓）\n`);
     
     const results: Array<{ success: boolean; position: any; error?: string; amount?: number }> = [];
     
-    for (let i = 0; i < redeemablePositions.length; i++) {
-      const pos = redeemablePositions[i];
+    for (let i = 0; i < winningPositions.length; i++) {
+      const status = winningPositions[i];
+      const pos = status.position;
       console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      console.log(`回收持仓 #${i + 1}/${redeemablePositions.length}`);
+      console.log(`回收持仓 #${i + 1}/${winningPositions.length}`);
       console.log(`   市场: ${pos.market || pos.conditionId || 'N/A'}`);
       console.log(`   条件ID: ${pos.conditionId || 'N/A'}`);
       console.log(`   数量: ${pos.size || pos.amount || pos.balance || '0'}`);
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
+      console.log(`   状态: ✅ 获胜 (payout: ${status.payoutRatio.toFixed(4)})`);
       
       try {
         // 获取赎回所需的参数
@@ -433,8 +446,10 @@ async function main() {
       .reduce((sum, r) => sum + (r.amount || 0), 0);
     
     console.log(`总持仓数: ${redeemablePositions.length}`);
+    console.log(`获胜持仓: ${winningPositions.length}`);
+    console.log(`失败持仓: ${positionStatuses.length - winningPositions.length} (已跳过)`);
     console.log(`成功回收: ${successCount}`);
-    console.log(`失败: ${failCount}`);
+    console.log(`回收失败: ${failCount}`);
     if (totalRedeemed > 0) {
       console.log(`总回收金额: $${totalRedeemed.toFixed(2)} USDC.e`);
     }
