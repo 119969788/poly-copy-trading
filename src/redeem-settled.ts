@@ -59,17 +59,33 @@ async function checkWinningStatus(
     const numerator = await ctf.payoutNumerator(normalizedConditionId, outcomeIndex);
     const denominator = await ctf.payoutDenominator(normalizedConditionId);
     
+    // 检查 denominator 是否为 0（避免除零错误）
+    if (denominator.eq(0)) {
+      console.warn(`   ⚠️  警告: denominator 为 0，无法计算 payout`);
+      return { isWinning: false, payoutRatio: 0, payout: '0' };
+    }
+    
+    // 如果 numerator 为 0，说明是失败方向
     if (numerator.eq(0)) {
       return { isWinning: false, payoutRatio: 0, payout: '0' };
     }
     
+    // 计算 payout 比例
     const payoutBigInt = numerator.mul(ethers.parseEther('1')).div(denominator);
     const payout = ethers.formatEther(payoutBigInt);
     const payoutRatio = parseFloat(payout);
     
+    // 验证 payout 是否有效（应该在 0 到 1 之间）
+    if (payoutRatio <= 0 || payoutRatio > 1) {
+      console.warn(`   ⚠️  警告: payout 比例异常: ${payoutRatio}`);
+      return { isWinning: false, payoutRatio: 0, payout: '0' };
+    }
+    
     return { isWinning: true, payoutRatio, payout };
-  } catch (error) {
+  } catch (error: any) {
     // 检查失败，返回未知状态
+    const errorMsg = error?.message || String(error);
+    console.warn(`   ⚠️  检查 payout 失败: ${errorMsg.substring(0, 100)}`);
     return { isWinning: false, payoutRatio: 0, payout: '0' };
   }
 }
