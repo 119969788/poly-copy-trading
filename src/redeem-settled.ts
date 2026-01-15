@@ -47,6 +47,7 @@ function normalizeConditionId(conditionId: string): string {
 }
 
 // 检查持仓是否获胜
+// 对于二进制市场，需要检查两个方向的 payout 来判断哪个是获胜的
 async function checkWinningStatus(
   provider: ethers.Provider,
   conditionId: string,
@@ -56,7 +57,6 @@ async function checkWinningStatus(
     const ctf = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
     const normalizedConditionId = normalizeConditionId(conditionId);
     
-    const numerator = await ctf.payoutNumerator(normalizedConditionId, outcomeIndex);
     const denominator = await ctf.payoutDenominator(normalizedConditionId);
     
     // 检查 denominator 是否为 0（避免除零错误）
@@ -65,15 +65,50 @@ async function checkWinningStatus(
       return { isWinning: false, payoutRatio: 0, payout: '0' };
     }
     
-    // 如果 numerator 为 0，说明是失败方向
-    if (numerator.eq(0)) {
-      return { isWinning: false, payoutRatio: 0, payout: '0' };
+    // 对于二进制市场，检查两个方向的 payout
+    // outcomeIndex 0 和 1 分别对应两个方向
+    const numerator0 = await ctf.payoutNumerator(normalizedConditionId, 0);
+    const numerator1 = await ctf.payoutNumerator(normalizedConditionId, 1);
+    
+    // 计算两个方向的 payout 比例
+    const payout0BigInt = numerator0.mul(ethers.parseEther('1')).div(denominator);
+    const payout1BigInt = numerator1.mul(ethers.parseEther('1')).div(denominator);
+    const payout0 = parseFloat(ethers.formatEther(payout0BigInt));
+    const payout1 = parseFloat(ethers.formatEther(payout1BigInt));
+    
+    // 判断用户持有的方向（outcomeIndex）的 payout
+    let numerator: any;
+    let payoutRatio: number;
+    let payout: string;
+    
+    if (outcomeIndex === 0) {
+      numerator = numerator0;
+      payoutRatio = payout0;
+      payout = payout0.toString();
+    } else if (outcomeIndex === 1) {
+      numerator = numerator1;
+      payoutRatio = payout1;
+      payout = payout1.toString();
+    } else {
+      // 如果 outcomeIndex 不是 0 或 1，使用提供的 outcomeIndex
+      numerator = await ctf.payoutNumerator(normalizedConditionId, outcomeIndex);
+      const payoutBigInt = numerator.mul(ethers.parseEther('1')).div(denominator);
+      payout = ethers.formatEther(payoutBigInt);
+      payoutRatio = parseFloat(payout);
     }
     
-    // 计算 payout 比例
-    const payoutBigInt = numerator.mul(ethers.parseEther('1')).div(denominator);
-    const payout = ethers.formatEther(payoutBigInt);
-    const payoutRatio = parseFloat(payout);
+    // 如果 numerator 为 0，说明是失败方向
+    if (numerator.eq(0)) {
+      // 检查另一个方向是否获胜（payout=1）
+      const otherIndex = outcomeIndex === 0 ? 1 : 0;
+      const otherPayout = outcomeIndex === 0 ? payout1 : payout0;
+      
+      if (otherPayout >= 0.99) { // 另一个方向获胜（payout ≈ 1）
+        console.warn(`   ⚠️  注意: 当前方向 payout=0，但另一个方向 payout=${otherPayout.toFixed(4)} (获胜)`);
+      }
+      
+      return { isWinning: false, payoutRatio: 0, payout: '0' };
+    }
     
     // 验证 payout 是否有效（应该在 0 到 1 之间）
     if (payoutRatio <= 0 || payoutRatio > 1) {
@@ -81,7 +116,13 @@ async function checkWinningStatus(
       return { isWinning: false, payoutRatio: 0, payout: '0' };
     }
     
-    return { isWinning: true, payoutRatio, payout };
+    // 如果 payout 接近 1，说明是获胜方向
+    if (payoutRatio >= 0.99) {
+      return { isWinning: true, payoutRatio, payout };
+    }
+    
+    // 如果 payout > 0 但 < 0.99，可能是部分获胜或其他情况
+    return { isWinning: payoutRatio > 0, payoutRatio, payout };
   } catch (error: any) {
     // 检查失败，返回未知状态
     const errorMsg = error?.message || String(error);
