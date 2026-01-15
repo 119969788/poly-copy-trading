@@ -6,7 +6,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 // CTF 合约地址和 ABI
-const CTF_ADDRESS = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
+const CTF_ADDRESS = '0x4d97dcd97ec945f40cf65f87097ace5ea0476045';
 const CTF_ABI = [
   'function payoutNumerator(bytes32 conditionId, uint256 outcomeIndex) view returns (uint256)',
   'function payoutDenominator(bytes32 conditionId) view returns (uint256)'

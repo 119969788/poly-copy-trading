@@ -9,7 +9,7 @@ dotenv.config();
 // 配置常量
 const RPC_URL = process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com';
 const USER_ADDRESS = process.env.SAFE_PROXY_ADDRESS || process.env.PROXY_WALLET_ADDRESS; // Safe 代理地址（从 portfolio 获取）
-const CTF_ADDRESS = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045'; // CTF 合约地址
+const CTF_ADDRESS = '0x4d97dcd97ec945f40cf65f87097ace5ea0476045'; // CTF 合约地址
 const USDC_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // USDC.e 地址
 const DATA_API_BASE = 'https://data-api.polymarket.com';
 
