@@ -80,7 +80,22 @@ pnpm install
 
 ```bash
 # 手动安装缺失的依赖
-pnpm add ethers@^6.9.0 @safe-global/protocol-kit@^3.0.0 axios@^1.6.0
+pnpm add ethers@^6.9.0 @safe-global/protocol-kit@^3.0.0 @safe-global/safe-core-sdk-types@^4.0.0 axios@^1.6.0
+
+# 或者重新安装所有依赖
+pnpm install
+
+# 然后重试
+pnpm redeem-tokens-safe
+```
+
+### 错误：Cannot find module '@safe-global/safe-core-sdk-types'
+
+如果遇到这个错误，说明缺少 Safe SDK 的类型包：
+
+```bash
+# 安装缺失的类型包
+pnpm add @safe-global/safe-core-sdk-types@^4.0.0
 
 # 然后重试
 pnpm redeem-tokens-safe

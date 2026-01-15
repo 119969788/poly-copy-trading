@@ -28,6 +28,7 @@
   "dependencies": {
     "@catalyst-team/poly-sdk": "latest",
     "@safe-global/protocol-kit": "^3.0.0",
+    "@safe-global/safe-core-sdk-types": "^4.0.0",
     "axios": "^1.6.0",
     "dotenv": "^16.4.5",
     "ethers": "^6.9.0"
