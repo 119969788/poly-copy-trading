@@ -271,32 +271,35 @@ async function main() {
     console.log(`   可回收持仓数量: ${redeemablePositions.length}`);
     console.log('');
     
-    // 批量回收（只处理获胜的持仓）
-    console.log('🔄 开始批量回收（仅获胜持仓）...\n');
+    // 批量回收（处理所有持仓：获胜的赎回，失败的尝试卖出）
+    console.log('🔄 开始批量处理所有持仓...\n');
     
-    // 过滤出只有获胜的持仓
     const winningPositions = positionStatuses.filter(s => s.isWinning);
+    const losingPositions = positionStatuses.filter(s => !s.isWinning);
     
-    if (winningPositions.length === 0) {
-      console.log('❌ 没有获胜的持仓需要回收\n');
-      console.log('💡 提示：所有持仓都是失败方向，无法回收\n');
+    console.log(`准备处理 ${positionStatuses.length} 个持仓：`);
+    console.log(`   ✅ 获胜持仓: ${winningPositions.length} (尝试赎回)`);
+    console.log(`   ❌ 失败持仓: ${losingPositions.length} (尝试卖出)\n`);
+    
+    if (positionStatuses.length === 0) {
+      console.log('❌ 没有持仓需要处理\n');
       return;
     }
     
-    console.log(`准备回收 ${winningPositions.length} 个获胜持仓（跳过 ${positionStatuses.length - winningPositions.length} 个失败持仓）\n`);
+    const results: Array<{ success: boolean; position: any; error?: string; amount?: number; action: string }> = [];
     
-    const results: Array<{ success: boolean; position: any; error?: string; amount?: number }> = [];
-    
+    // 先处理获胜的持仓（赎回）
     for (let i = 0; i < winningPositions.length; i++) {
       const status = winningPositions[i];
       const pos = status.position;
       console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      console.log(`回收持仓 #${i + 1}/${winningPositions.length}`);
+      console.log(`处理持仓 #${i + 1}/${winningPositions.length} [获胜 - 赎回]`);
       console.log(`   市场ID: ${pos.market || pos.marketId || 'N/A'}`);
       console.log(`   条件ID: ${pos.conditionId || pos.market || 'N/A'}`);
       console.log(`   数量: ${pos.size || pos.amount || pos.balance || '0'}`);
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
       console.log(`   状态: ✅ 获胜 (payout: ${status.payoutRatio.toFixed(4)})`);
+      console.log(`   操作: 🔄 尝试赎回`);
       
       try {
         // 获取赎回所需的参数
@@ -442,9 +445,10 @@ async function main() {
         results.push({ 
           success: true, 
           position: pos,
-          amount: redeemResult?.amount || parseFloat(pos.size || pos.amount || pos.balance || '0')
+          amount: redeemResult?.amount || parseFloat(pos.size || pos.amount || pos.balance || '0'),
+          action: 'redeem'
         });
-        console.log(`   状态: ✅ 成功`);
+        console.log(`   状态: ✅ 赎回成功`);
         if (redeemResult?.amount !== undefined) {
           console.log(`   回收金额: $${redeemResult.amount} USDC.e`);
         }
@@ -457,10 +461,106 @@ async function main() {
         results.push({ 
           success: false, 
           position: pos, 
-          error: error?.message || String(error) 
+          error: error?.message || String(error),
+          action: 'redeem'
         });
-        console.log(`   状态: ❌ 失败`);
+        console.log(`   状态: ❌ 赎回失败`);
         console.log(`   错误: ${error?.message || error}`);
+      }
+      
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+      
+      // 避免请求过快，稍作延迟
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    
+    // 处理失败的持仓（尝试卖出）
+    for (let i = 0; i < losingPositions.length; i++) {
+      const status = losingPositions[i];
+      const pos = status.position;
+      console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      console.log(`处理持仓 #${i + 1}/${losingPositions.length} [失败 - 卖出]`);
+      console.log(`   市场ID: ${pos.market || pos.marketId || 'N/A'}`);
+      console.log(`   条件ID: ${pos.conditionId || pos.market || 'N/A'}`);
+      console.log(`   数量: ${pos.size || pos.amount || pos.balance || '0'}`);
+      console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
+      console.log(`   状态: ❌ 失败 (payout: 0)`);
+      console.log(`   操作: 💰 尝试卖出`);
+      
+      try {
+        const marketId = pos.market || pos.marketId;
+        const amount = parseFloat(pos.size || pos.amount || pos.balance || '0');
+        const outcomeIndex = pos.outcomeIndex;
+        const side = pos.outcome === 'YES' || pos.outcome === 'Up' ? 'YES' : 'NO';
+        
+        if (!marketId) {
+          throw new Error('市场ID不存在，无法卖出');
+        }
+        
+        console.log(`   尝试在市场上卖出失败方向的代币...`);
+        
+        // 尝试使用 SDK 的卖出功能
+        let sellResult: any = null;
+        
+        try {
+          // 方法1: 尝试使用 tradingService 的卖出方法
+          if ((sdk.tradingService as any).sell) {
+            sellResult = await (sdk.tradingService as any).sell(marketId, side, amount);
+          } else if ((sdk.tradingService as any).placeSellOrder) {
+            sellResult = await (sdk.tradingService as any).placeSellOrder(marketId, side, amount);
+          } else if ((sdk.tradingService as any).createSellOrder) {
+            sellResult = await (sdk.tradingService as any).createSellOrder(marketId, side, amount);
+          }
+          // 方法2: 尝试使用订单 API
+          else if ((sdk.tradingService as any).placeOrder) {
+            sellResult = await (sdk.tradingService as any).placeOrder({
+              market: marketId,
+              side: side,
+              size: amount,
+              orderType: 'MARKET' // 使用市价单快速卖出
+            });
+          } else {
+            throw new Error('SDK 不支持卖出方法');
+          }
+        } catch (sellError: any) {
+          const errorMsg = sellError?.message || String(sellError);
+          
+          // 检查是否是预期的错误（市场已关闭、没有流动性等）
+          if (errorMsg.includes('market closed') || 
+              errorMsg.includes('no liquidity') ||
+              errorMsg.includes('market not found') ||
+              errorMsg.includes('insufficient liquidity')) {
+            throw new Error(`无法卖出：市场已关闭或没有流动性（失败方向的代币通常无法卖出）`);
+          } else {
+            throw new Error(`卖出失败: ${errorMsg.substring(0, 200)}`);
+          }
+        }
+        
+        results.push({ 
+          success: true, 
+          position: pos,
+          amount: sellResult?.amount || amount,
+          action: 'sell'
+        });
+        console.log(`   状态: ✅ 卖出成功`);
+        if (sellResult?.amount !== undefined) {
+          console.log(`   卖出金额: $${sellResult.amount} USDC.e`);
+        }
+        if (sellResult?.txHash || sellResult?.hash || sellResult?.transactionHash) {
+          const txHash = sellResult?.txHash || sellResult?.hash || sellResult?.transactionHash;
+          console.log(`   交易哈希: ${txHash}`);
+          console.log(`   查看交易: https://polygonscan.com/tx/${txHash}`);
+        }
+      } catch (error: any) {
+        results.push({ 
+          success: false, 
+          position: pos, 
+          error: error?.message || String(error),
+          action: 'sell'
+        });
+        console.log(`   状态: ❌ 卖出失败`);
+        console.log(`   错误: ${error?.message || error}`);
+        console.log(`   💡 提示: 失败方向的代币通常无法卖出（市场已关闭或没有流动性）`);
       }
       
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -480,19 +580,27 @@ async function main() {
       .filter(r => r.success && r.amount)
       .reduce((sum, r) => sum + (r.amount || 0), 0);
     
+    const redeemSuccess = results.filter(r => r.action === 'redeem' && r.success).length;
+    const redeemFail = results.filter(r => r.action === 'redeem' && !r.success).length;
+    const sellSuccess = results.filter(r => r.action === 'sell' && r.success).length;
+    const sellFail = results.filter(r => r.action === 'sell' && !r.success).length;
+    
     console.log(`总持仓数: ${redeemablePositions.length}`);
     console.log(`获胜持仓: ${winningPositions.length}`);
-    console.log(`失败持仓: ${positionStatuses.length - winningPositions.length} (已跳过)`);
-    console.log(`成功回收: ${successCount}`);
-    console.log(`回收失败: ${failCount}`);
+    console.log(`失败持仓: ${losingPositions.length}`);
+    console.log(`✅ 成功赎回: ${redeemSuccess}`);
+    console.log(`❌ 赎回失败: ${redeemFail}`);
+    console.log(`✅ 成功卖出: ${sellSuccess}`);
+    console.log(`❌ 卖出失败: ${sellFail}`);
     if (totalRedeemed > 0) {
       console.log(`总回收金额: $${totalRedeemed.toFixed(2)} USDC.e`);
     }
     
-    if (failCount > 0) {
+    if (redeemFail > 0 || sellFail > 0) {
       console.log('\n失败的持仓：');
       results.filter(r => !r.success).forEach((r, i) => {
-        console.log(`   ${i + 1}. 条件ID: ${r.position.conditionId || 'N/A'}`);
+        const actionText = r.action === 'redeem' ? '赎回' : '卖出';
+        console.log(`   ${i + 1}. [${actionText}] 条件ID: ${r.position.conditionId || 'N/A'}`);
         console.log(`      方向: ${r.position.outcome || r.position.side || 'N/A'}`);
         console.log(`      错误: ${r.error}`);
       });
