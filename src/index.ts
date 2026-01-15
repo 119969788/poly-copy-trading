@@ -202,27 +202,70 @@ async function main() {
               console.log(`   摘要: ${result.summary}`);
             }
             
-            // 等待交易确认（增加等待时间）
-            console.log('   等待交易确认（约 10-15 秒）...');
-            await new Promise(resolve => setTimeout(resolve, 12000));
-            
-            // 再次检查授权状态，确认授权成功
-            console.log('   验证授权状态...');
-            const verifyStatus = await onchainService.checkReadyForCTF('10000');
-            if (verifyStatus.ready) {
+            // 如果摘要显示授权已完成，直接认为成功
+            if (result.summary && result.summary.includes('already set') || result.summary.includes('Ready to trade')) {
               authorizationSuccess = true;
-              console.log('✅ USDC.e 授权验证成功\n');
+              console.log('✅ USDC.e 授权已完成（根据授权摘要确认）\n');
             } else {
-              retryCount++;
-              if (retryCount < maxRetries) {
-                console.log(`⚠️  授权验证失败，将在 ${5 * retryCount} 秒后重试...\n`);
-                await new Promise(resolve => setTimeout(resolve, 5000 * retryCount));
-              } else {
-                console.error('❌ 授权验证失败，已达到最大重试次数');
-                console.error('   请检查：');
-                console.error('   1. 钱包余额是否足够（需要 USDC.e 和 MATIC）');
-                console.error('   2. 网络连接是否正常');
-                console.error('   3. 可以在 Polymarket 网站上手动授权 USDC.e\n');
+              // 等待交易确认（增加等待时间）
+              console.log('   等待交易确认（约 10-15 秒）...');
+              await new Promise(resolve => setTimeout(resolve, 12000));
+              
+              // 再次检查授权状态，使用较小的金额验证（只检查授权，不检查余额）
+              console.log('   验证授权状态...');
+              try {
+                // 先获取当前余额，使用余额金额来验证授权（避免余额不足导致验证失败）
+                const balances = await onchainService.getTokenBalances();
+                const usdcBalance = parseFloat(balances.usdcE || '0');
+                // 使用当前余额或最小值 1 USDC 来验证授权
+                const verifyAmount = Math.max(usdcBalance, 1).toString();
+                
+                const verifyStatus = await onchainService.checkReadyForCTF(verifyAmount);
+                // 检查是否只是因为余额不足，而不是授权问题
+                const isBalanceIssue = verifyStatus.issues?.some((issue: string) => 
+                  issue.includes('Insufficient USDC') || issue.includes('balance')
+                );
+                const isApprovalIssue = verifyStatus.issues?.some((issue: string) => 
+                  issue.includes('allowance') || issue.includes('approval')
+                );
+                
+                if (verifyStatus.ready) {
+                  authorizationSuccess = true;
+                  console.log('✅ USDC.e 授权验证成功\n');
+                } else if (isBalanceIssue && !isApprovalIssue) {
+                  // 只是余额不足，但授权已成功
+                  authorizationSuccess = true;
+                  console.log('✅ USDC.e 授权验证成功（余额不足不影响授权状态）\n');
+                } else {
+                  retryCount++;
+                  if (retryCount < maxRetries) {
+                    console.log(`⚠️  授权验证失败，将在 ${5 * retryCount} 秒后重试...\n`);
+                    await new Promise(resolve => setTimeout(resolve, 5000 * retryCount));
+                  } else {
+                    console.error('❌ 授权验证失败，已达到最大重试次数');
+                    console.error('   请检查：');
+                    console.error('   1. 钱包余额是否足够（需要 USDC.e 和 MATIC）');
+                    console.error('   2. 网络连接是否正常');
+                    console.error('   3. 可以在 Polymarket 网站上手动授权 USDC.e');
+                    console.error('   4. 如果已授权，可以设置 SKIP_APPROVAL_CHECK=true 跳过检查\n');
+                  }
+                }
+              } catch (verifyError: any) {
+                // 验证时出错，但如果授权摘要显示成功，仍然认为授权成功
+                if (result.summary && (result.summary.includes('already set') || result.summary.includes('Ready'))) {
+                  authorizationSuccess = true;
+                  console.log('✅ USDC.e 授权已完成（根据授权摘要确认，验证时网络可能延迟）\n');
+                } else {
+                  retryCount++;
+                  if (retryCount < maxRetries) {
+                    console.log(`⚠️  授权验证出错，将在 ${5 * retryCount} 秒后重试...\n`);
+                    await new Promise(resolve => setTimeout(resolve, 5000 * retryCount));
+                  } else {
+                    console.error('❌ 授权验证失败，已达到最大重试次数');
+                    console.error('   如果授权摘要显示"already set"或"Ready to trade"，说明授权已成功');
+                    console.error('   可以设置 SKIP_APPROVAL_CHECK=true 跳过检查\n');
+                  }
+                }
               }
             }
           } else {
