@@ -13,6 +13,7 @@
     "dip-arb": "tsx src/dip-arb-15m.ts",
     "redeem": "tsx src/redeem-settled.ts",
     "redeem-tokens": "tsx src/redeem-tokens.ts",
+    "redeem-tokens-safe": "tsx src/redeem-tokens-safe.ts",
     "approve": "tsx src/approve-contract.ts",
     "modify-params": "tsx src/modify-params.ts"
   },
@@ -26,7 +27,10 @@
   "license": "MIT",
   "dependencies": {
     "@catalyst-team/poly-sdk": "latest",
-    "dotenv": "^16.4.5"
+    "@safe-global/protocol-kit": "^3.0.0",
+    "axios": "^1.6.0",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.9.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.5",
