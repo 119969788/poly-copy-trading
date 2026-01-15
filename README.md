@@ -58,7 +58,33 @@ pnpm dev
 
 ## 服务器部署
 
-📖 **详细的服务器部署指南请查看：[DEPLOY.md](./DEPLOY.md)**
+### 🚀 一键安装（推荐）
+
+最简单的方式，自动完成所有步骤：
+
+```bash
+# 连接到服务器
+ssh root@你的服务器IP
+
+# 下载并运行一键安装脚本
+curl -fsSL https://raw.githubusercontent.com/119969788/poly-copy-trading/main/install.sh -o install.sh
+chmod +x install.sh
+bash install.sh
+```
+
+脚本会自动：
+- ✅ 安装 Node.js、pnpm、PM2、Git
+- ✅ 克隆项目
+- ✅ 安装依赖
+- ✅ 交互式配置私钥
+- ✅ 使用 PM2 启动应用
+- ✅ 设置开机自启
+
+📖 **详细说明请查看：[一键安装脚本使用指南](./INSTALL_SCRIPT_GUIDE.md)**
+
+### 📝 手动部署
+
+📖 **详细的服务器部署指南请查看：[DEPLOY.md](./DEPLOY.md) 或 [快速安装教程](./QUICK_INSTALL.md)**
 
 快速部署步骤：
 
@@ -67,7 +93,7 @@ pnpm dev
 3. 进入目录：`cd poly-copy-trading`
 4. 运行部署脚本：`bash deploy.sh`
 5. 配置 `.env` 文件
-6. 启动：`pm2 start ecosystem.config.js`
+6. 启动：`pm2 start ecosystem.config.cjs`
 
 ## 使用说明
 
