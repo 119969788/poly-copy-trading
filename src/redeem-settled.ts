@@ -292,8 +292,8 @@ async function main() {
       const pos = status.position;
       console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
       console.log(`回收持仓 #${i + 1}/${winningPositions.length}`);
-      console.log(`   市场: ${pos.market || pos.conditionId || 'N/A'}`);
-      console.log(`   条件ID: ${pos.conditionId || 'N/A'}`);
+      console.log(`   市场ID: ${pos.market || pos.marketId || 'N/A'}`);
+      console.log(`   条件ID: ${pos.conditionId || pos.market || 'N/A'}`);
       console.log(`   数量: ${pos.size || pos.amount || pos.balance || '0'}`);
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
       console.log(`   状态: ✅ 获胜 (payout: ${status.payoutRatio.toFixed(4)})`);
