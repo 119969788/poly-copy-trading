@@ -32,13 +32,60 @@ function printBanner() {
   console.log('═══════════════════════════════════════════════════\n');
 }
 
+// 将 conditionId 转换为 bytes32 格式（根据官方文档要求）
+function normalizeConditionId(conditionId: string): string {
+  // 去除空格
+  let normalized = conditionId.trim();
+  
+  // 如果以 0x 开头，去除它
+  if (normalized.startsWith('0x') || normalized.startsWith('0X')) {
+    normalized = normalized.slice(2);
+  }
+  
+  // 确保是 64 个十六进制字符（32 字节 = bytes32）
+  // 如果不足 64 个字符，前面补 0
+  if (normalized.length < 64) {
+    normalized = normalized.padStart(64, '0');
+  } else if (normalized.length > 64) {
+    // 如果超过 64 个字符，取前 64 个
+    normalized = normalized.slice(0, 64);
+  }
+  
+  // 返回带 0x 前缀的格式
+  return '0x' + normalized.toLowerCase();
+}
+
+// 将 outcomeIndex 转换为 indexSets（根据官方文档）
+// 对于二进制市场：YES = 1, NO = 2
+function outcomeIndexToIndexSet(outcomeIndex: number): number {
+  // outcomeIndex 通常从 0 开始（YES=0, NO=1）
+  // 但 CTF 的 indexSets 从 1 开始（YES=1, NO=2）
+  // 所以需要 +1
+  if (outcomeIndex === 0 || outcomeIndex === 1) {
+    return outcomeIndex + 1;
+  }
+  // 如果已经是 1 或 2，直接返回
+  if (outcomeIndex === 1 || outcomeIndex === 2) {
+    return outcomeIndex;
+  }
+  // 其他情况，假设已经是正确的格式
+  return outcomeIndex;
+}
+
 // 使用官方 CTF redeemPositions 方法回收代币
-// 注意：此函数需要 SDK 提供 ethers 或直接使用 SDK 的 CTF 方法
+// 根据官方文档：https://docs.polymarket.com/developers/CTF/redeem
+// 参数说明：
+// - collateralToken: USDC.e 地址
+// - parentCollectionId: bytes32(0) - null（二进制市场）
+// - conditionId: bytes32 格式的条件ID
+// - indexSets: 结果索引数组，例如 [1] 或 [2]（YES=1, NO=2）
 async function redeemPositionsCTF(
   sdk: PolymarketSDK,
-  conditionId: string,
+  conditionId: string, // 应该是已经规范化的 bytes32 格式
   indexSets: number[]
 ): Promise<any> {
+  const parentCollectionId = '0x0000000000000000000000000000000000000000000000000000000000000000'; // bytes32(0) - null
+  
   // 尝试使用 SDK 的 CTF 客户端
   if ((sdk as any).ctfClient) {
     const ctfClient = (sdk as any).ctfClient;
@@ -47,7 +94,7 @@ async function redeemPositionsCTF(
       // collateralToken, parentCollectionId (null), conditionId, indexSets
       return await ctfClient.redeemPositions(
         USDCe_ADDRESS,
-        '0x0000000000000000000000000000000000000000000000000000000000000000', // null bytes32
+        parentCollectionId,
         conditionId,
         indexSets
       );
@@ -63,7 +110,7 @@ async function redeemPositionsCTF(
   if ((onchainService as any).redeemPositions) {
     return await (onchainService as any).redeemPositions(
       USDCe_ADDRESS,
-      '0x0000000000000000000000000000000000000000000000000000000000000000',
+      parentCollectionId,
       conditionId,
       indexSets
     );
@@ -178,6 +225,7 @@ async function main() {
       console.log(`   数量: ${size.toFixed(4)}`);
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
       console.log(`   方向索引: ${pos.outcomeIndex !== undefined ? pos.outcomeIndex : 'N/A'}`);
+      console.log(`   代币ID (asset): ${pos.asset || pos.tokenId || 'N/A'}`);
       console.log(`   状态: ✅ 已结算 (redeemable: ${pos.redeemable})`);
       console.log('');
     });
@@ -211,6 +259,7 @@ async function main() {
       try {
         const conditionId = pos.conditionId || pos.market;
         const outcomeIndex = pos.outcomeIndex;
+        const asset = pos.asset || pos.tokenId || pos.outcomeTokenId;
         
         if (!conditionId) {
           throw new Error('条件ID（conditionId）不存在，无法赎回');
@@ -219,21 +268,43 @@ async function main() {
         if (outcomeIndex === undefined || outcomeIndex === null) {
           throw new Error('方向索引（outcomeIndex）不存在，无法赎回');
         }
-
-        // 根据官方文档，indexSets 应该是 outcomeIndex 的数组
-        // 对于二进制市场，通常是 [1] 或 [2]，或 [1,2]
-        // 这里我们使用单个 outcomeIndex，如果需要可以尝试 [1,2]
-        const indexSets = [outcomeIndex];
         
-        console.log(`   使用 CTF redeemPositions 方法:`);
-        console.log(`      conditionId: ${conditionId}`);
+        // 验证 conditionId 格式
+        let conditionIdStr = conditionId.toString();
+        if (conditionIdStr.length === 0) {
+          throw new Error('条件ID为空');
+        }
+        
+        // 显示原始信息
+        console.log(`   原始数据:`);
+        console.log(`     conditionId: ${conditionIdStr}`);
+        if (asset) {
+          console.log(`     asset/tokenId: ${asset}`);
+        }
+        console.log(`     outcomeIndex: ${outcomeIndex}`);
+
+        // 根据官方文档，indexSets 需要将 outcomeIndex 转换为正确的格式
+        // 对于二进制市场：YES = 1, NO = 2
+        // outcomeIndex 通常从 0 开始，需要转换为 CTF 的 indexSet（从 1 开始）
+        const indexSet = outcomeIndexToIndexSet(outcomeIndex);
+        const indexSets = [indexSet];
+        
+        // 规范化 conditionId
+        const normalizedConditionId = normalizeConditionId(conditionId);
+        
+        console.log(`   使用 CTF redeemPositions 方法（基于官方文档）:`);
+        console.log(`      原始 conditionId: ${conditionId}`);
+        console.log(`      规范化 conditionId (bytes32): ${normalizedConditionId}`);
+        console.log(`      outcomeIndex: ${outcomeIndex} -> indexSet: ${indexSet}`);
         console.log(`      indexSets: [${indexSets.join(', ')}]`);
+        console.log(`      collateralToken: ${USDCe_ADDRESS}`);
+        console.log(`      parentCollectionId: 0x0000...0000 (null)`);
 
         let tx: any = null;
 
         // 方法1: 使用官方 CTF redeemPositions 方法（推荐，基于官方文档）
         try {
-          tx = await redeemPositionsCTF(sdk, conditionId, indexSets);
+          tx = await redeemPositionsCTF(sdk, normalizedConditionId, indexSets);
           console.log(`   ✅ 使用 CTF redeemPositions 方法提交交易`);
         } catch (ctfError: any) {
           // 如果 CTF 方法失败，尝试其他 SDK 方法
