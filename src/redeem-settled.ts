@@ -279,7 +279,7 @@ async function main() {
     
     console.log(`准备处理 ${positionStatuses.length} 个持仓：`);
     console.log(`   ✅ 获胜持仓: ${winningPositions.length} (尝试赎回)`);
-    console.log(`   ❌ 失败持仓: ${losingPositions.length} (尝试卖出)\n`);
+    console.log(`   ❌ 失败持仓: ${losingPositions.length} (尝试赎回，可能失败)\n`);
     
     if (positionStatuses.length === 0) {
       console.log('❌ 没有持仓需要处理\n');
@@ -474,80 +474,158 @@ async function main() {
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
     
-    // 处理失败的持仓（尝试卖出）
+    // 处理失败的持仓（尝试赎回，虽然通常会失败）
     for (let i = 0; i < losingPositions.length; i++) {
       const status = losingPositions[i];
       const pos = status.position;
       console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      console.log(`处理持仓 #${i + 1}/${losingPositions.length} [失败 - 卖出]`);
+      console.log(`处理持仓 #${i + 1}/${losingPositions.length} [失败 - 尝试赎回]`);
       console.log(`   市场ID: ${pos.market || pos.marketId || 'N/A'}`);
       console.log(`   条件ID: ${pos.conditionId || pos.market || 'N/A'}`);
       console.log(`   数量: ${pos.size || pos.amount || pos.balance || '0'}`);
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
       console.log(`   状态: ❌ 失败 (payout: 0)`);
-      console.log(`   操作: 💰 尝试卖出`);
+      console.log(`   操作: 🔄 尝试赎回（可能失败，这是正常情况）`);
       
       try {
+        // 获取赎回所需的参数
+        let conditionId = pos.conditionId;
         const marketId = pos.market || pos.marketId;
-        const amount = parseFloat(pos.size || pos.amount || pos.balance || '0');
         const outcomeIndex = pos.outcomeIndex;
-        const side = pos.outcome === 'YES' || pos.outcome === 'Up' ? 'YES' : 'NO';
+        const asset = pos.asset || pos.tokenId || pos.outcomeTokenId;
+        const amount = parseFloat(pos.size || pos.amount || pos.balance || '0');
         
-        if (!marketId) {
-          throw new Error('市场ID不存在，无法卖出');
+        // 如果 conditionId 不存在，尝试从市场信息中获取
+        if (!conditionId && marketId) {
+          try {
+            console.log(`   ⚠️  条件ID不存在，尝试从市场信息获取...`);
+            const marketInfo = await (sdk.dataApi as any).getMarket?.(marketId) ||
+                              await (sdk.dataApi as any).getMarketInfo?.(marketId);
+            
+            if (marketInfo) {
+              conditionId = marketInfo.conditionId || 
+                           marketInfo.condition_id || 
+                           marketInfo.condition ||
+                           marketInfo.ctfConditionId;
+              
+              if (conditionId) {
+                console.log(`   ✅ 从市场信息获取到条件ID: ${conditionId}`);
+              } else {
+                console.log(`   ⚠️  市场信息中未找到条件ID，使用市场ID作为条件ID`);
+                conditionId = marketId;
+              }
+            } else {
+              console.log(`   ⚠️  无法获取市场信息，使用市场ID作为条件ID`);
+              conditionId = marketId;
+            }
+          } catch (error: any) {
+            console.log(`   ⚠️  获取市场信息失败: ${error?.message || error}，使用市场ID作为条件ID`);
+            conditionId = marketId;
+          }
+        } else if (!conditionId) {
+          conditionId = marketId;
         }
         
-        console.log(`   尝试在市场上卖出失败方向的代币...`);
+        if (!conditionId) {
+          throw new Error('条件ID（conditionId）不存在，无法赎回');
+        }
         
-        // 尝试使用 SDK 的卖出功能
-        let sellResult: any = null;
+        if (outcomeIndex === undefined || outcomeIndex === null) {
+          throw new Error('方向索引（outcomeIndex）不存在，无法赎回');
+        }
+
+        console.log(`   市场ID: ${marketId || 'N/A'}`);
+        console.log(`   条件ID: ${conditionId}`);
+        console.log(`   方向索引: ${outcomeIndex}`);
+        console.log(`   数量: ${amount.toFixed(4)}`);
+        if (asset) {
+          console.log(`   代币ID (asset): ${asset}`);
+        }
+
+        // 尝试使用 SDK 的 CTF 赎回方法
+        let redeemResult: any = null;
         
         try {
-          // 方法1: 尝试使用 tradingService 的卖出方法
-          if ((sdk.tradingService as any).sell) {
-            sellResult = await (sdk.tradingService as any).sell(marketId, side, amount);
-          } else if ((sdk.tradingService as any).placeSellOrder) {
-            sellResult = await (sdk.tradingService as any).placeSellOrder(marketId, side, amount);
-          } else if ((sdk.tradingService as any).createSellOrder) {
-            sellResult = await (sdk.tradingService as any).createSellOrder(marketId, side, amount);
+          // 方法1: 尝试使用 CTF 的 redeem 方法
+          if ((onchainService as any).ctfRedeem) {
+            redeemResult = await (onchainService as any).ctfRedeem(conditionId, outcomeIndex);
+          } else if ((onchainService as any).redeemCondition) {
+            redeemResult = await (onchainService as any).redeemCondition(conditionId, outcomeIndex);
+          } else if ((sdk.tradingService as any).ctfRedeem) {
+            redeemResult = await (sdk.tradingService as any).ctfRedeem(conditionId, outcomeIndex);
+          } else if ((sdk.tradingService as any).redeemCondition) {
+            redeemResult = await (sdk.tradingService as any).redeemCondition(conditionId, outcomeIndex);
+          } 
+          // 方法2: 尝试使用 CTFClient
+          else if ((sdk as any).ctfClient) {
+            const ctfClient = (sdk as any).ctfClient;
+            if (ctfClient.redeem) {
+              redeemResult = await ctfClient.redeem(conditionId, outcomeIndex);
+            } else if (ctfClient.redeemPositions) {
+              const indexSets = [[outcomeIndex]];
+              redeemResult = await ctfClient.redeemPositions(conditionId, indexSets);
+            }
           }
-          // 方法2: 尝试使用订单 API
-          else if ((sdk.tradingService as any).placeOrder) {
-            sellResult = await (sdk.tradingService as any).placeOrder({
-              market: marketId,
-              side: side,
-              size: amount,
-              orderType: 'MARKET' // 使用市价单快速卖出
-            });
+          // 方法3: 回退到使用 tokenId
+          else if (asset) {
+            let tokenIdParam: string;
+            if (typeof asset === 'string') {
+              if (asset.startsWith('0x')) {
+                tokenIdParam = asset;
+              } else {
+                try {
+                  const bigIntValue = BigInt(asset);
+                  tokenIdParam = '0x' + bigIntValue.toString(16);
+                } catch (e) {
+                  tokenIdParam = asset;
+                }
+              }
+            } else {
+              tokenIdParam = '0x' + BigInt(asset).toString(16);
+            }
+            
+            console.log(`   回退到使用 tokenId 方式: ${tokenIdParam}`);
+            
+            if ((onchainService as any).redeem) {
+              redeemResult = await (onchainService as any).redeem(tokenIdParam);
+            } else if ((onchainService as any).redeemTokens) {
+              redeemResult = await (onchainService as any).redeemTokens(tokenIdParam);
+            } else if ((sdk.tradingService as any).redeem) {
+              redeemResult = await (sdk.tradingService as any).redeem(tokenIdParam);
+            } else {
+              throw new Error('SDK 不支持任何赎回方法');
+            }
           } else {
-            throw new Error('SDK 不支持卖出方法');
+            throw new Error('无法获取赎回所需的参数');
           }
-        } catch (sellError: any) {
-          const errorMsg = sellError?.message || String(sellError);
+        } catch (apiError: any) {
+          const errorMsg = apiError?.message || String(apiError);
           
-          // 检查是否是预期的错误（市场已关闭、没有流动性等）
-          if (errorMsg.includes('market closed') || 
-              errorMsg.includes('no liquidity') ||
-              errorMsg.includes('market not found') ||
-              errorMsg.includes('insufficient liquidity')) {
-            throw new Error(`无法卖出：市场已关闭或没有流动性（失败方向的代币通常无法卖出）`);
+          // 检查是否是预期的错误（失败方向的代币无法赎回）
+          if (errorMsg.includes('revert') || 
+              errorMsg.includes('INVALID') || 
+              errorMsg.includes('CALL_EXCEPTION') || 
+              errorMsg.includes('invalid opcode') ||
+              errorMsg.includes('cannot redeem') ||
+              errorMsg.includes('not redeemable')) {
+            throw new Error(`无法赎回：失败方向的代币无法赎回（payout=0，这是正常情况）`);
           } else {
-            throw new Error(`卖出失败: ${errorMsg.substring(0, 200)}`);
+            throw new Error(`赎回 API 调用失败: ${errorMsg.substring(0, 200)}`);
           }
         }
         
         results.push({ 
           success: true, 
           position: pos,
-          amount: sellResult?.amount || amount,
-          action: 'sell'
+          amount: redeemResult?.amount || amount,
+          action: 'redeem'
         });
-        console.log(`   状态: ✅ 卖出成功`);
-        if (sellResult?.amount !== undefined) {
-          console.log(`   卖出金额: $${sellResult.amount} USDC.e`);
+        console.log(`   状态: ✅ 赎回成功（罕见情况）`);
+        if (redeemResult?.amount !== undefined) {
+          console.log(`   回收金额: $${redeemResult.amount} USDC.e`);
         }
-        if (sellResult?.txHash || sellResult?.hash || sellResult?.transactionHash) {
-          const txHash = sellResult?.txHash || sellResult?.hash || sellResult?.transactionHash;
+        if (redeemResult?.txHash || redeemResult?.hash || redeemResult?.transactionHash) {
+          const txHash = redeemResult?.txHash || redeemResult?.hash || redeemResult?.transactionHash;
           console.log(`   交易哈希: ${txHash}`);
           console.log(`   查看交易: https://polygonscan.com/tx/${txHash}`);
         }
@@ -556,11 +634,11 @@ async function main() {
           success: false, 
           position: pos, 
           error: error?.message || String(error),
-          action: 'sell'
+          action: 'redeem'
         });
-        console.log(`   状态: ❌ 卖出失败`);
+        console.log(`   状态: ❌ 赎回失败`);
         console.log(`   错误: ${error?.message || error}`);
-        console.log(`   💡 提示: 失败方向的代币通常无法卖出（市场已关闭或没有流动性）`);
+        console.log(`   💡 提示: 失败方向的代币无法赎回（payout=0），这是正常情况`);
       }
       
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -580,27 +658,30 @@ async function main() {
       .filter(r => r.success && r.amount)
       .reduce((sum, r) => sum + (r.amount || 0), 0);
     
-    const redeemSuccess = results.filter(r => r.action === 'redeem' && r.success).length;
-    const redeemFail = results.filter(r => r.action === 'redeem' && !r.success).length;
-    const sellSuccess = results.filter(r => r.action === 'sell' && r.success).length;
-    const sellFail = results.filter(r => r.action === 'sell' && !r.success).length;
+    const winningRedeemSuccess = results.filter(r => r.action === 'redeem' && r.success && winningPositions.some(wp => wp.position === r.position)).length;
+    const winningRedeemFail = results.filter(r => r.action === 'redeem' && !r.success && winningPositions.some(wp => wp.position === r.position)).length;
+    const losingRedeemSuccess = results.filter(r => r.action === 'redeem' && r.success && losingPositions.some(lp => lp.position === r.position)).length;
+    const losingRedeemFail = results.filter(r => r.action === 'redeem' && !r.success && losingPositions.some(lp => lp.position === r.position)).length;
     
     console.log(`总持仓数: ${redeemablePositions.length}`);
-    console.log(`获胜持仓: ${winningPositions.length}`);
-    console.log(`失败持仓: ${losingPositions.length}`);
-    console.log(`✅ 成功赎回: ${redeemSuccess}`);
-    console.log(`❌ 赎回失败: ${redeemFail}`);
-    console.log(`✅ 成功卖出: ${sellSuccess}`);
-    console.log(`❌ 卖出失败: ${sellFail}`);
+    console.log(`   获胜持仓: ${winningPositions.length}`);
+    console.log(`   失败持仓: ${losingPositions.length}`);
+    console.log(`成功赎回: ${successCount}`);
+    console.log(`   ✅ 获胜持仓成功: ${winningRedeemSuccess}`);
+    console.log(`   ✅ 失败持仓成功: ${losingRedeemSuccess} (罕见)`);
+    console.log(`赎回失败: ${failCount}`);
+    console.log(`   ❌ 获胜持仓失败: ${winningRedeemFail}`);
+    console.log(`   ❌ 失败持仓失败: ${losingRedeemFail} (预期，失败持仓通常无法赎回)`);
     if (totalRedeemed > 0) {
       console.log(`总回收金额: $${totalRedeemed.toFixed(2)} USDC.e`);
     }
     
-    if (redeemFail > 0 || sellFail > 0) {
+    if (failCount > 0) {
       console.log('\n失败的持仓：');
       results.filter(r => !r.success).forEach((r, i) => {
-        const actionText = r.action === 'redeem' ? '赎回' : '卖出';
-        console.log(`   ${i + 1}. [${actionText}] 条件ID: ${r.position.conditionId || 'N/A'}`);
+        const isWinning = winningPositions.some(wp => wp.position === r.position);
+        const statusText = isWinning ? '获胜' : '失败';
+        console.log(`   ${i + 1}. [${statusText}] 条件ID: ${r.position.conditionId || 'N/A'}`);
         console.log(`      方向: ${r.position.outcome || r.position.side || 'N/A'}`);
         console.log(`      错误: ${r.error}`);
       });
