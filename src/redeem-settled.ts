@@ -215,8 +215,8 @@ async function main() {
       const statusText = status.isWinning ? '获胜' : '失败';
       
       console.log(`持仓 #${index + 1}: ${statusIcon} ${statusText}`);
-      console.log(`   市场: ${pos.market || pos.conditionId || 'N/A'}`);
-      console.log(`   条件ID: ${pos.conditionId || 'N/A'}`);
+      console.log(`   市场ID: ${pos.market || pos.marketId || 'N/A'}`);
+      console.log(`   条件ID: ${pos.conditionId || pos.market || 'N/A'}`);
       console.log(`   代币ID (asset): ${pos.asset || 'N/A'}`);
       console.log(`   数量: ${size.toFixed(4)}`);
       console.log(`   方向: ${pos.outcome || pos.side || 'N/A'}`);
@@ -300,10 +300,44 @@ async function main() {
       
       try {
         // 获取赎回所需的参数
-        const conditionId = pos.conditionId || pos.market;
+        let conditionId = pos.conditionId;
+        const marketId = pos.market || pos.marketId;
         const outcomeIndex = pos.outcomeIndex;
         const asset = pos.asset || pos.tokenId || pos.outcomeTokenId;
         const amount = parseFloat(pos.size || pos.amount || pos.balance || '0');
+        
+        // 如果 conditionId 不存在，尝试从市场信息中获取
+        if (!conditionId && marketId) {
+          try {
+            console.log(`   ⚠️  条件ID不存在，尝试从市场信息获取...`);
+            const marketInfo = await (sdk.dataApi as any).getMarket?.(marketId) ||
+                              await (sdk.dataApi as any).getMarketInfo?.(marketId);
+            
+            if (marketInfo) {
+              // 尝试从市场信息中获取 conditionId
+              conditionId = marketInfo.conditionId || 
+                           marketInfo.condition_id || 
+                           marketInfo.condition ||
+                           marketInfo.ctfConditionId;
+              
+              if (conditionId) {
+                console.log(`   ✅ 从市场信息获取到条件ID: ${conditionId}`);
+              } else {
+                console.log(`   ⚠️  市场信息中未找到条件ID，使用市场ID作为条件ID`);
+                conditionId = marketId;
+              }
+            } else {
+              console.log(`   ⚠️  无法获取市场信息，使用市场ID作为条件ID`);
+              conditionId = marketId;
+            }
+          } catch (error: any) {
+            console.log(`   ⚠️  获取市场信息失败: ${error?.message || error}，使用市场ID作为条件ID`);
+            conditionId = marketId;
+          }
+        } else if (!conditionId) {
+          // 如果都没有，使用 marketId
+          conditionId = marketId;
+        }
         
         if (!conditionId) {
           throw new Error('条件ID（conditionId）不存在，无法赎回');
@@ -313,6 +347,7 @@ async function main() {
           throw new Error('方向索引（outcomeIndex）不存在，无法赎回');
         }
 
+        console.log(`   市场ID: ${marketId || 'N/A'}`);
         console.log(`   条件ID: ${conditionId}`);
         console.log(`   方向索引: ${outcomeIndex}`);
         console.log(`   数量: ${amount.toFixed(4)}`);
