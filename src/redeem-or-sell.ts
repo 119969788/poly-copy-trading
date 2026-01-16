@@ -74,7 +74,32 @@ function outcomeIndexToIndexSet(outcomeIndex: number): number {
   return outcomeIndex;
 }
 
-// 检查 payout（修复版本：正确处理 bigint）
+// 安全地将值转换为 bigint（避免 .eq 等方法的调用）
+function toBigInt(value: any): bigint {
+  try {
+    if (typeof value === 'bigint') {
+      return value;
+    }
+    if (typeof value === 'number') {
+      return BigInt(value);
+    }
+    if (value === null || value === undefined) {
+      return 0n;
+    }
+    // 尝试转换为字符串再转 bigint
+    const str = String(value);
+    // 移除可能的科学计数法或非数字字符
+    const cleanStr = str.replace(/[^0-9-]/g, '');
+    if (cleanStr === '' || cleanStr === '-') {
+      return 0n;
+    }
+    return BigInt(cleanStr);
+  } catch (e) {
+    return 0n;
+  }
+}
+
+// 检查 payout（修复版本：正确处理所有类型，不使用 .eq）
 async function checkPayout(
   provider: ethers.Provider,
   conditionId: string,
@@ -84,9 +109,9 @@ async function checkPayout(
     const ctfContract = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
     const normalizedConditionId = normalizeConditionId(conditionId);
     
-    // 读取 payoutDenominator（使用 bigint 比较，不使用 .eq）
-    const denominator = await ctfContract.payoutDenominator(normalizedConditionId);
-    const denominatorValue = typeof denominator === 'bigint' ? denominator : BigInt(denominator.toString());
+    // 读取 payoutDenominator（使用安全转换函数）
+    const denominatorRaw = await ctfContract.payoutDenominator(normalizedConditionId);
+    const denominatorValue = toBigInt(denominatorRaw);
     
     // 如果 denominator 为 0，说明市场未结算
     if (denominatorValue === 0n) {
@@ -94,8 +119,8 @@ async function checkPayout(
     }
     
     // 读取 payoutNumerator
-    const numerator = await ctfContract.payoutNumerators(normalizedConditionId, indexSet);
-    const numeratorValue = typeof numerator === 'bigint' ? numerator : BigInt(numerator.toString());
+    const numeratorRaw = await ctfContract.payoutNumerators(normalizedConditionId, indexSet);
+    const numeratorValue = toBigInt(numeratorRaw);
     
     // 计算 payout = numerator / denominator
     // 对于二元市场，获胜方 payout = 1 (numerator == denominator)，失败方 payout = 0
@@ -104,7 +129,13 @@ async function checkPayout(
     
     return { payout, canRedeem };
   } catch (error: any) {
-    console.warn(`   ⚠️  检查 payout 失败: ${error?.message || error}`);
+    const errorMsg = error?.message || String(error);
+    // 如果错误信息包含 .eq，说明可能是其他代码的问题
+    if (errorMsg.includes('.eq')) {
+      console.warn(`   ⚠️  检查 payout 失败（类型转换问题，已使用安全方法）: ${errorMsg}`);
+    } else {
+      console.warn(`   ⚠️  检查 payout 失败: ${errorMsg}`);
+    }
     // 如果检查失败，返回默认值（保守策略：不赎回）
     return { payout: 0, canRedeem: false };
   }
