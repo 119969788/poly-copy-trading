@@ -15,7 +15,8 @@
     "redeem-tokens": "tsx src/redeem-tokens.ts",
     "redeem-tokens-safe": "tsx src/redeem-tokens-safe.ts",
     "approve": "tsx src/approve-contract.ts",
-    "modify-params": "tsx src/modify-params.ts"
+    "modify-params": "tsx src/modify-params.ts",
+    "transfer-tokens": "tsx src/transfer-tokens.ts"
   },
   "keywords": [
     "polymarket",
