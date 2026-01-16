@@ -18,7 +18,7 @@ const POLYGON_RPC_URL = process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com'
 const CTF_ABI = [
   'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)',
   'function payoutDenominator(bytes32 conditionId) view returns (uint256)',
-  'function payoutNumerators(bytes32 conditionId, uint256 indexSet) view returns (uint256)',
+  'function payoutNumerators(bytes32 conditionId, uint256 index) view returns (uint256)',
   'function balanceOf(address account, uint256 id) view returns (uint256)',
   'function getCollectionId(bytes32 parentCollectionId, bytes32 conditionId, uint256 indexSet) pure returns (uint256)',
 ];
@@ -97,26 +97,40 @@ async function checkPayout(
     const ctfContract = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
     const normalizedConditionId = normalizeConditionId(conditionId);
     
-    // 读取 payoutDenominator
-    const denominatorRaw = await ctfContract.payoutDenominator(normalizedConditionId);
-    const denominator = toBigInt(denominatorRaw);
+    // 先读取 payoutDenominator
+    let denominator: bigint;
+    try {
+      const denominatorRaw = await ctfContract.payoutDenominator(normalizedConditionId);
+      denominator = toBigInt(denominatorRaw);
+    } catch (error: any) {
+      // 如果 denominator 调用失败，可能市场未结算
+      return { payout: 0, canRedeem: false, numerator: 0n, denominator: 0n };
+    }
     
     // 如果 denominator 为 0，说明市场未结算
     if (denominator === 0n) {
       return { payout: 0, canRedeem: false, numerator: 0n, denominator: 0n };
     }
     
-    // 读取 payoutNumerator
-    const numeratorRaw = await ctfContract.payoutNumerators(normalizedConditionId, indexSet);
-    const numerator = toBigInt(numeratorRaw);
+    // 读取 payoutNumerator（使用 try-catch 处理可能的调用失败）
+    let numerator: bigint;
+    try {
+      const numeratorRaw = await ctfContract.payoutNumerators(normalizedConditionId, indexSet);
+      numerator = toBigInt(numeratorRaw);
+    } catch (error: any) {
+      // 如果 numerator 调用失败，可能是该 indexSet 不存在或市场未完全结算
+      // 返回 numerator = 0，表示该方向不可赎回
+      numerator = 0n;
+    }
     
     // 计算 payout = numerator / denominator
-    const payout = Number(numerator) / Number(denominator);
-    const canRedeem = numerator > 0n;
+    const payout = denominator > 0n ? Number(numerator) / Number(denominator) : 0;
+    const canRedeem = numerator > 0n && denominator > 0n;
     
     return { payout, canRedeem, numerator, denominator };
   } catch (error: any) {
-    console.warn(`   ⚠️  检查 payout 失败: ${error?.message || error}`);
+    // 静默处理错误，返回不可赎回状态
+    // 不打印警告，因为可能是正常的（市场未结算或方向不存在）
     return { payout: 0, canRedeem: false, numerator: 0n, denominator: 0n };
   }
 }
@@ -239,11 +253,33 @@ async function main() {
     for (const [conditionId, posList] of Object.entries(positionsByCondition)) {
       console.log(`市场: ${conditionId.slice(0, 20)}...`);
       
+      // 先检查市场是否已结算（检查 denominator）
+      const normalizedConditionId = normalizeConditionId(conditionId);
+      const ctfContract = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
+      
+      let isSettled = false;
+      try {
+        const denominatorRaw = await ctfContract.payoutDenominator(normalizedConditionId);
+        const denominator = toBigInt(denominatorRaw);
+        isSettled = denominator > 0n;
+        
+        if (!isSettled) {
+          console.log(`   ⚠️  市场未结算（denominator = 0）`);
+          console.log('');
+          continue;
+        }
+      } catch (error: any) {
+        console.log(`   ⚠️  无法检查市场结算状态: ${error?.message || '未知错误'}`);
+        console.log('');
+        continue;
+      }
+      
       // 检查所有可能的方向（通常二元市场是 1 和 2）
       const possibleIndexSets = [1, 2];
+      let foundRedeemable = false;
       
       for (const indexSet of possibleIndexSets) {
-        // 检查 payout
+        // 检查 payout（静默处理错误）
         const payoutInfo = await checkPayout(provider, conditionId, indexSet);
         
         if (payoutInfo.canRedeem && payoutInfo.payout > 0) {
@@ -270,9 +306,20 @@ async function main() {
               
               const size = parseFloat(matchingPos.size || matchingPos.amount || matchingPos.balance || '0');
               console.log(`   ✅ 方向 ${indexSet}: payout=${payoutInfo.payout.toFixed(4)}, 余额=${ethers.formatUnits(balance, 6)} (${size.toFixed(4)} shares)`);
+              foundRedeemable = true;
             }
+          } else {
+            // 即使 payout > 0，如果没有余额也跳过
+            console.log(`   ⚪ 方向 ${indexSet}: payout=${payoutInfo.payout.toFixed(4)}, 但余额为 0`);
           }
+        } else {
+          // payout = 0 或不可赎回（失败方向）
+          console.log(`   ❌ 方向 ${indexSet}: payout=0（失败方向，不可赎回）`);
         }
+      }
+      
+      if (!foundRedeemable) {
+        console.log(`   ℹ️  该市场没有可赎回的持仓`);
       }
       console.log('');
     }
