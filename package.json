@@ -18,7 +18,8 @@
     "modify-params": "tsx src/modify-params.ts",
     "transfer-tokens": "tsx src/transfer-tokens.ts",
     "query-balances": "tsx src/query-balances.ts",
-    "redeem-or-sell": "tsx src/redeem-or-sell.ts"
+    "redeem-or-sell": "tsx src/redeem-or-sell.ts",
+    "redeem-official": "tsx src/redeem-official.ts"
   },
   "keywords": [
     "polymarket",
