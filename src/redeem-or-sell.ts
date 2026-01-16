@@ -1,4 +1,5 @@
 import { PolymarketSDK, OnchainService } from '@catalyst-team/poly-sdk';
+import { ethers } from 'ethers';
 import dotenv from 'dotenv';
 
 // 加载环境变量
@@ -8,6 +9,16 @@ dotenv.config();
 const CTF_ADDRESS = '0x4d97dcd97ec945f40cf65f87097ace5ea0476045';
 // USDC.e 地址（Polygon 网络）
 const USDCe_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+
+// Polygon RPC URL
+const POLYGON_RPC_URL = process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com';
+
+// CTF 合约 ABI（用于检查 payout）
+const CTF_ABI = [
+  'function payoutDenominator(bytes32 conditionId) view returns (uint256)',
+  'function payoutNumerators(bytes32 conditionId, uint256 indexSet) view returns (uint256)',
+  'function getCondition(bytes32 conditionId) view returns (uint256, uint256, uint256, uint256, uint256)',
+];
 
 // 获取配置
 let privateKey = process.env.POLYMARKET_PRIVATE_KEY;
@@ -61,6 +72,42 @@ function outcomeIndexToIndexSet(outcomeIndex: number): number {
     return outcomeIndex;
   }
   return outcomeIndex;
+}
+
+// 检查 payout（修复版本：正确处理 bigint）
+async function checkPayout(
+  provider: ethers.Provider,
+  conditionId: string,
+  indexSet: number
+): Promise<{ payout: number; canRedeem: boolean }> {
+  try {
+    const ctfContract = new ethers.Contract(CTF_ADDRESS, CTF_ABI, provider);
+    const normalizedConditionId = normalizeConditionId(conditionId);
+    
+    // 读取 payoutDenominator（使用 bigint 比较，不使用 .eq）
+    const denominator = await ctfContract.payoutDenominator(normalizedConditionId);
+    const denominatorValue = typeof denominator === 'bigint' ? denominator : BigInt(denominator.toString());
+    
+    // 如果 denominator 为 0，说明市场未结算
+    if (denominatorValue === 0n) {
+      return { payout: 0, canRedeem: false };
+    }
+    
+    // 读取 payoutNumerator
+    const numerator = await ctfContract.payoutNumerators(normalizedConditionId, indexSet);
+    const numeratorValue = typeof numerator === 'bigint' ? numerator : BigInt(numerator.toString());
+    
+    // 计算 payout = numerator / denominator
+    // 对于二元市场，获胜方 payout = 1 (numerator == denominator)，失败方 payout = 0
+    const payout = Number(numeratorValue) / Number(denominatorValue);
+    const canRedeem = numeratorValue > 0n;
+    
+    return { payout, canRedeem };
+  } catch (error: any) {
+    console.warn(`   ⚠️  检查 payout 失败: ${error?.message || error}`);
+    // 如果检查失败，返回默认值（保守策略：不赎回）
+    return { payout: 0, canRedeem: false };
+  }
 }
 
 // 使用官方 CTF redeemPositions 方法回收代币
@@ -118,6 +165,9 @@ async function main() {
     onchainService = new OnchainService({
       privateKey: privateKey as string,
     });
+
+    // 创建 ethers provider（用于检查 payout）
+    const provider = new ethers.JsonRpcProvider(POLYGON_RPC_URL);
 
     // 获取钱包地址
     const walletAddress = sdk.tradingService.getAddress();
@@ -282,7 +332,18 @@ async function main() {
           const indexSets = [indexSet];
           const normalizedConditionId = normalizeConditionId(conditionId);
 
-          console.log(`   🔄 尝试赎回...`);
+          // 先检查 payout（修复版本）
+          console.log(`   🔍 检查 payout...`);
+          const payoutInfo = await checkPayout(provider, conditionId, indexSet);
+          
+          console.log(`      payout: ${payoutInfo.payout.toFixed(4)}`);
+          console.log(`      可赎回: ${payoutInfo.canRedeem ? '✅ 是' : '❌ 否'}`);
+
+          if (!payoutInfo.canRedeem) {
+            throw new Error(`持仓 payout = 0，这是失败方向，无法赎回（这是正常情况）`);
+          }
+
+          console.log(`   🔄 尝试赎回（payout > 0，获胜方向）...`);
           console.log(`      conditionId: ${normalizedConditionId}`);
           console.log(`      indexSets: [${indexSets.join(', ')}]`);
 
