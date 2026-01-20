@@ -433,9 +433,13 @@ async function mainLoop() {
   }
 
   try {
-    // 获取市场的 YES 和 NO 代币
-    const yesToken = currentMarket.tokens?.find((t: any) => t.outcome === 'Yes' || t.outcome === 'YES');
-    const noToken = currentMarket.tokens?.find((t: any) => t.outcome === 'No' || t.outcome === 'NO');
+    // 获取市场的 YES/UP 和 NO/DOWN 代币
+    const yesToken = currentMarket.tokens?.find((t: any) => 
+      t.outcome === 'Yes' || t.outcome === 'YES' || t.outcome === 'Up' || t.outcome === 'UP'
+    );
+    const noToken = currentMarket.tokens?.find((t: any) => 
+      t.outcome === 'No' || t.outcome === 'NO' || t.outcome === 'Down' || t.outcome === 'DOWN'
+    );
 
     if (!yesToken || !noToken) {
       console.warn(`   ⚠️  市场数据不完整，跳过本次检查`);
@@ -511,9 +515,36 @@ async function main() {
     sdk = await PolymarketSDK.create({ privateKey });
     console.log('✅ SDK 初始化成功\n');
 
-    // 查找15分钟市场
+    // 查找15分钟市场（优先使用 DipArbService，因为它专门用于15分钟市场）
     console.log(`🔍 正在查找 ${MARKET_COIN} 15分钟市场...`);
-    currentMarket = await find15mMarket(MARKET_COIN);
+    
+    let dipArbResult: any = null;
+    if (sdk.dipArb && typeof sdk.dipArb.findAndStart === 'function') {
+      try {
+        console.log(`   [DipArb] 使用 DipArb 服务查找市场...`);
+        dipArbResult = await sdk.dipArb.findAndStart({
+          coin: MARKET_COIN,
+          preferDuration: '15m',
+        });
+        
+        if (dipArbResult && dipArbResult.market) {
+          currentMarket = dipArbResult.market;
+          console.log(`   [DipArb] 找到市场: ${dipArbResult.market.name || dipArbResult.market.slug || 'N/A'}`);
+          
+          // 停止 dipArb（我们只需要市场信息，不使用它的交易功能）
+          if (typeof sdk.dipArb.stop === 'function') {
+            await sdk.dipArb.stop();
+          }
+        }
+      } catch (e: any) {
+        console.log(`   ⚠️  DipArb 查找失败: ${e?.message || e}`);
+      }
+    }
+    
+    // 如果 DipArb 没找到，尝试其他方法
+    if (!currentMarket) {
+      currentMarket = await find15mMarket(MARKET_COIN);
+    }
 
     // 如果找不到市场，尝试使用手动指定的代币ID或条件ID
     if (!currentMarket) {
@@ -553,8 +584,36 @@ async function main() {
       }
     }
 
-    console.log(`✅ 找到市场: ${currentMarket.slug || currentMarket.name || 'N/A'}`);
-    console.log(`   条件ID: ${currentMarket.conditionId || 'N/A'}`);
+    // 显示市场信息（类似 DipArb 的输出格式）
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('✅ 已启动监控市场');
+    const marketName = currentMarket.name || currentMarket.slug || currentMarket.question || 'N/A';
+    console.log(`   市场: ${marketName}`);
+    console.log(`   币种: ${MARKET_COIN}`);
+    console.log(`   周期: 15分钟`);
+    if (currentMarket.conditionId) {
+      console.log(`   条件ID: ${currentMarket.conditionId}`);
+    }
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+    
+    // 获取并显示代币信息
+    if (currentMarket.tokens && currentMarket.tokens.length >= 2) {
+      const yesToken = currentMarket.tokens.find((t: any) => 
+        t.outcome === 'Yes' || t.outcome === 'YES' || t.outcome === 'Up' || t.outcome === 'UP'
+      );
+      const noToken = currentMarket.tokens.find((t: any) => 
+        t.outcome === 'No' || t.outcome === 'NO' || t.outcome === 'Down' || t.outcome === 'DOWN'
+      );
+      
+      if (yesToken && noToken) {
+        const yesPrice = yesToken.price || 0;
+        const noPrice = noToken.price || 0;
+        console.log(`📊 当前价格:`);
+        console.log(`   ${yesToken.outcome || 'YES'}: $${yesPrice.toFixed(4)}`);
+        console.log(`   ${noToken.outcome || 'NO'}: $${noPrice.toFixed(4)}`);
+        console.log('');
+      }
+    }
     
     // 订阅实时价格更新
     if (sdk.realtime && currentMarket.tokens) {
@@ -564,11 +623,13 @@ async function main() {
       
       if (tokenIds.length > 0) {
         sdk.realtime.subscribeMarket(tokenIds);
-        console.log(`✅ 已订阅实时价格更新\n`);
+        console.log(`✅ 已订阅实时价格更新（Chainlink 价格）\n`);
       }
     }
 
-    console.log('🚀 开始套利策略监控...\n');
+    console.log('🚀 开始套利策略监控...');
+    console.log('   策略: 赔率80买（价格<=0.80买入），90卖（价格>=0.90卖出）');
+    console.log('   按 Ctrl+C 可以优雅停止\n');
 
     // 立即执行一次
     await mainLoop();
