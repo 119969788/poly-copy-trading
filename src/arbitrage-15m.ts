@@ -170,43 +170,39 @@ async function getMarketByEventSlug(eventSlug: string): Promise<any> {
     
     console.log(`   ✅ 成功获取市场数据`);
     
-    // 4. 提取关键信息（优先使用 clobTokenIds）
+    // 4. 提取关键信息（只使用 clobTokenIds，不从 outcomes 推断）
     const clobTokenIds = market.clobTokenIds || [];
     const conditionId = market.conditionId || eventData.markets[0].conditionId;
     
-    // 规范化 outcomes
+    // 验证 clobTokenIds 是否存在
+    if (!clobTokenIds || clobTokenIds.length < 2) {
+      console.error(`   ❌ 市场数据缺少 clobTokenIds（必需字段）`);
+      console.error(`   提示：请检查市场是否有效，或尝试其他市场`);
+      return null;
+    }
+    
+    // 规范化 outcomes（仅用于显示标签，不用于 tokenId）
     const normalizedOutcomes = normalizeOutcomes(market.outcomes);
     
-    // 构建 tokens 数组
-    let tokens: Array<{ tokenId: string; id: string; outcome: string; price?: number }> = [];
+    // 构建 tokens 数组（只使用 clobTokenIds）
+    const tokens: Array<{ tokenId: string; id: string; outcome: string; price?: number }> = [
+      {
+        tokenId: clobTokenIds[0],
+        id: clobTokenIds[0],
+        outcome: normalizedOutcomes[0]?.outcome || 'Yes' || 'Up',
+        price: normalizedOutcomes[0]?.price,
+      },
+      {
+        tokenId: clobTokenIds[1],
+        id: clobTokenIds[1],
+        outcome: normalizedOutcomes[1]?.outcome || 'No' || 'Down',
+        price: normalizedOutcomes[1]?.price,
+      },
+    ];
     
-    // 方法1: 如果有 clobTokenIds，直接使用（最可靠）
-    if (clobTokenIds.length >= 2) {
-      tokens = [
-        {
-          tokenId: clobTokenIds[0],
-          id: clobTokenIds[0],
-          outcome: normalizedOutcomes[0]?.outcome || 'Yes' || 'Up',
-          price: normalizedOutcomes[0]?.price,
-        },
-        {
-          tokenId: clobTokenIds[1],
-          id: clobTokenIds[1],
-          outcome: normalizedOutcomes[1]?.outcome || 'No' || 'Down',
-          price: normalizedOutcomes[1]?.price,
-        },
-      ];
-      console.log(`   ✅ 使用 clobTokenIds: ${clobTokenIds.length} 个代币`);
-    } else if (normalizedOutcomes.length >= 2) {
-      // 方法2: 如果没有 clobTokenIds，尝试从 outcomes 提取
-      tokens = normalizedOutcomes.slice(0, 2).map((o, index) => ({
-        tokenId: o.tokenId || clobTokenIds[index] || '',
-        id: o.tokenId || clobTokenIds[index] || '',
-        outcome: o.outcome,
-        price: o.price,
-      }));
-      console.log(`   ⚠️  使用 outcomes 数据（clobTokenIds 不可用）`);
-    }
+    console.log(`   ✅ 使用 clobTokenIds（官方 CLOB 代币ID）`);
+    console.log(`      Token 0: ${clobTokenIds[0].substring(0, 20)}... (${tokens[0].outcome})`);
+    console.log(`      Token 1: ${clobTokenIds[1].substring(0, 20)}... (${tokens[1].outcome})`);
     
     // 5. 构建完整的市场对象
     const fullMarket = {
@@ -722,12 +718,26 @@ async function mainLoop() {
   }
 
   try {
-    // 获取市场的 YES/UP 和 NO/DOWN 代币
+    // 获取市场的 YES/UP 和 NO/DOWN 代币（只使用 clobTokenIds）
     let yesTokenId: string | null = null;
     let noTokenId: string | null = null;
     
-    // 方法1: 从 tokens 数组获取
-    if (currentMarket.tokens && currentMarket.tokens.length >= 2) {
+    // 方法1（最优先）: 直接从 clobTokenIds 获取（这是官方 CLOB 代币ID）
+    if (currentMarket.clobTokenIds && currentMarket.clobTokenIds.length >= 2) {
+      yesTokenId = currentMarket.clobTokenIds[0];
+      noTokenId = currentMarket.clobTokenIds[1];
+      // 验证 tokenId 格式（应该是数字字符串）
+      if (yesTokenId && noTokenId && /^\d+$/.test(yesTokenId) && /^\d+$/.test(noTokenId)) {
+        // Token IDs 有效，继续使用
+      } else {
+        console.warn(`   ⚠️  clobTokenIds 格式异常，尝试其他方法...`);
+        yesTokenId = null;
+        noTokenId = null;
+      }
+    }
+    
+    // 方法2: 如果 clobTokenIds 不可用，尝试从 tokens 数组获取（但优先验证格式）
+    if ((!yesTokenId || !noTokenId) && currentMarket.tokens && currentMarket.tokens.length >= 2) {
       const yesToken = currentMarket.tokens.find((t: any) => 
         t.outcome === 'Yes' || t.outcome === 'YES' || t.outcome === 'Up' || t.outcome === 'UP'
       );
@@ -736,40 +746,47 @@ async function mainLoop() {
       );
       
       if (yesToken && noToken) {
-        yesTokenId = yesToken.tokenId || yesToken.id;
-        noTokenId = noToken.tokenId || noToken.id;
+        const yesId = yesToken.tokenId || yesToken.id;
+        const noId = noToken.tokenId || noToken.id;
+        // 验证格式
+        if (yesId && noId && /^\d+$/.test(yesId) && /^\d+$/.test(noId)) {
+          yesTokenId = yesId;
+          noTokenId = noId;
+        }
       }
-    }
-    
-    // 方法2: 从 clobTokenIds 获取（如果 tokens 数组没有）
-    if ((!yesTokenId || !noTokenId) && currentMarket.clobTokenIds && currentMarket.clobTokenIds.length >= 2) {
-      yesTokenId = currentMarket.clobTokenIds[0];
-      noTokenId = currentMarket.clobTokenIds[1];
     }
     
     // 方法3: 如果还是没有，尝试通过 Gamma API 获取
     if ((!yesTokenId || !noTokenId) && currentMarket.slug) {
-      console.log(`   🔍 市场缺少 Token IDs，尝试通过 Gamma API 获取...`);
+      console.log(`   🔍 市场缺少有效的 clobTokenIds，尝试通过 Gamma API 获取...`);
       const tokenData = await getTokenIdsFromGammaAPI(currentMarket.slug);
-      if (tokenData) {
-        yesTokenId = tokenData.yesTokenId;
-        noTokenId = tokenData.noTokenId;
-        // 更新市场对象
-        currentMarket.clobTokenIds = [yesTokenId, noTokenId];
-        if (!currentMarket.tokens) {
-          currentMarket.tokens = [];
-        }
-        if (yesTokenId) {
+      if (tokenData && tokenData.yesTokenId && tokenData.noTokenId) {
+        // 验证格式
+        if (/^\d+$/.test(tokenData.yesTokenId) && /^\d+$/.test(tokenData.noTokenId)) {
+          yesTokenId = tokenData.yesTokenId;
+          noTokenId = tokenData.noTokenId;
+          // 更新市场对象
+          currentMarket.clobTokenIds = [yesTokenId, noTokenId];
+          if (!currentMarket.tokens) {
+            currentMarket.tokens = [];
+          }
           currentMarket.tokens.push({ tokenId: yesTokenId, id: yesTokenId, outcome: 'Yes' });
-        }
-        if (noTokenId) {
           currentMarket.tokens.push({ tokenId: noTokenId, id: noTokenId, outcome: 'No' });
         }
       }
     }
 
     if (!yesTokenId || !noTokenId) {
-      console.warn(`   ⚠️  无法获取 Token IDs，跳过本次检查`);
+      console.error(`   ❌ 无法获取有效的 clobTokenIds（必需字段）`);
+      console.error(`   提示：请检查市场数据是否完整，或尝试更新 ARBITRAGE_EVENT_SLUG`);
+      return;
+    }
+    
+    // 验证 tokenId 格式（CLOB tokenId 应该是纯数字字符串）
+    if (!/^\d+$/.test(yesTokenId) || !/^\d+$/.test(noTokenId)) {
+      console.error(`   ❌ Token ID 格式错误（应该是纯数字）`);
+      console.error(`   YES Token ID: ${yesTokenId?.substring(0, 20)}...`);
+      console.error(`   NO Token ID: ${noTokenId?.substring(0, 20)}...`);
       return;
     }
 
