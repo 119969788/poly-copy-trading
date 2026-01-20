@@ -297,6 +297,72 @@ async function getMarketByEventSlug(eventSlug: string): Promise<any> {
   }
 }
 
+// 检查市场状态
+async function checkMarketStatus(market: any): Promise<'active' | 'closed' | 'ended' | 'unknown'> {
+  try {
+    // 方法1: 检查市场数据中的状态字段
+    if (market.active !== undefined) {
+      return market.active ? 'active' : 'closed';
+    }
+    if (market.status) {
+      const status = String(market.status).toLowerCase();
+      if (status.includes('closed') || status.includes('ended') || status.includes('resolved')) {
+        return 'closed';
+      }
+      if (status.includes('active') || status.includes('open')) {
+        return 'active';
+      }
+    }
+    
+    // 方法2: 尝试获取订单簿（如果订单簿不存在，市场可能已关闭）
+    if (market.clobTokenIds && market.clobTokenIds.length > 0) {
+      try {
+        const tokenId = Array.isArray(market.clobTokenIds) 
+          ? String(market.clobTokenIds[0])
+          : String(market.clobTokenIds);
+        
+        const orderbookUrl = `https://clob.polymarket.com/book?token_id=${tokenId}`;
+        const response = await fetch(orderbookUrl);
+        
+        if (response.status === 404) {
+          return 'closed';
+        }
+        if (response.ok) {
+          return 'active';
+        }
+      } catch (e) {
+        // 忽略错误
+      }
+    }
+    
+    // 方法3: 通过 Gamma API 检查市场状态
+    if (market.slug) {
+      try {
+        const marketUrl = `https://gamma-api.polymarket.com/markets?slug=${market.slug}`;
+        const response = await fetch(marketUrl);
+        if (response.ok) {
+          const marketData = await response.json();
+          const m = Array.isArray(marketData) ? marketData[0] : marketData;
+          if (m) {
+            if (m.active === false || m.status === 'closed' || m.status === 'ended') {
+              return 'closed';
+            }
+            if (m.active === true || m.status === 'active') {
+              return 'active';
+            }
+          }
+        }
+      } catch (e) {
+        // 忽略错误
+      }
+    }
+    
+    return 'unknown';
+  } catch (error: any) {
+    return 'unknown';
+  }
+}
+
 // 查找15分钟市场
 async function find15mMarket(coin: string): Promise<any> {
   if (!sdk) {
@@ -309,8 +375,15 @@ async function find15mMarket(coin: string): Promise<any> {
       console.log(`   🔍 优先使用指定的事件 slug: ${EVENT_SLUG}`);
       const market = await getMarketByEventSlug(EVENT_SLUG);
       if (market) {
-        console.log(`   ✅ 通过事件 slug 成功获取市场`);
-        return market;
+        // 检查市场状态
+        const status = await checkMarketStatus(market);
+        if (status === 'closed' || status === 'ended') {
+          console.log(`   ⚠️  指定的事件 slug 对应的市场已关闭，回退到自动搜索...`);
+          // 继续执行下面的自动搜索逻辑
+        } else {
+          console.log(`   ✅ 通过事件 slug 成功获取市场（状态: ${status}）`);
+          return market;
+        }
       } else {
         console.log(`   ⚠️  通过事件 slug 获取失败，回退到自动搜索...`);
         // 继续执行下面的自动搜索逻辑
@@ -878,10 +951,39 @@ async function mainLoop() {
     const yesPrice = await getCurrentPrice(yesTokenId);
     const noPrice = await getCurrentPrice(noTokenId);
 
-    // 如果无法获取价格，尝试使用默认值或跳过
+    // 如果无法获取价格，检查市场状态
     if (yesPrice === null && noPrice === null) {
       console.warn(`   ⚠️  无法获取价格（市场可能已关闭或订单簿不存在）`);
-      console.warn(`   提示：如果市场已结束，请更新 ARBITRAGE_EVENT_SLUG 为新的市场`);
+      
+      // 检查市场是否已关闭
+      const marketStatus = await checkMarketStatus(currentMarket);
+      if (marketStatus === 'closed' || marketStatus === 'ended') {
+        console.warn(`   ⚠️  市场已关闭，尝试查找新的活跃市场...`);
+        
+        // 尝试查找新的活跃市场
+        const newMarket = await find15mMarket(MARKET_COIN);
+        if (newMarket && newMarket.slug !== currentMarket.slug) {
+          console.log(`   ✅ 找到新的活跃市场: ${newMarket.slug || newMarket.name || 'N/A'}`);
+          currentMarket = newMarket;
+          
+          // 重新订阅实时价格
+          if (sdk.realtime && newMarket.tokens) {
+            const tokenIds = newMarket.tokens
+              .map((t: any) => t.tokenId || t.id)
+              .filter(Boolean);
+            if (tokenIds.length > 0) {
+              sdk.realtime.subscribeMarket(tokenIds);
+              console.log(`   ✅ 已订阅新市场的实时价格更新`);
+            }
+          }
+          
+          // 继续下一次循环（使用新市场）
+          return;
+        } else {
+          console.warn(`   ⚠️  未找到新的活跃市场，请手动更新 ARBITRAGE_EVENT_SLUG`);
+        }
+      }
+      
       return;
     }
     
