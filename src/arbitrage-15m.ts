@@ -112,6 +112,34 @@ async function find15mMarket(coin: string): Promise<any> {
               market.name?.toLowerCase().includes('15m') ||
               market.name?.toLowerCase().includes('15分钟')) {
             console.log(`   ✅ 通过 Gamma API 找到市场: ${market.slug || market.name || 'N/A'}`);
+            
+            // 如果市场没有 clobTokenIds，尝试通过 Gamma API 获取完整信息
+            if (!market.clobTokenIds && market.slug) {
+              console.log(`   🔍 获取市场的完整 Token IDs...`);
+              const tokenData = await getTokenIdsFromGammaAPI(market.slug);
+              if (tokenData) {
+                // 合并 Token IDs 信息
+                market.clobTokenIds = [tokenData.yesTokenId, tokenData.noTokenId];
+                if (!market.tokens) {
+                  market.tokens = [];
+                }
+                if (tokenData.yesTokenId) {
+                  market.tokens.push({
+                    tokenId: tokenData.yesTokenId,
+                    id: tokenData.yesTokenId,
+                    outcome: 'Yes',
+                  });
+                }
+                if (tokenData.noTokenId) {
+                  market.tokens.push({
+                    tokenId: tokenData.noTokenId,
+                    id: tokenData.noTokenId,
+                    outcome: 'No',
+                  });
+                }
+              }
+            }
+            
             return market;
           }
         }
@@ -434,20 +462,55 @@ async function mainLoop() {
 
   try {
     // 获取市场的 YES/UP 和 NO/DOWN 代币
-    const yesToken = currentMarket.tokens?.find((t: any) => 
-      t.outcome === 'Yes' || t.outcome === 'YES' || t.outcome === 'Up' || t.outcome === 'UP'
-    );
-    const noToken = currentMarket.tokens?.find((t: any) => 
-      t.outcome === 'No' || t.outcome === 'NO' || t.outcome === 'Down' || t.outcome === 'DOWN'
-    );
-
-    if (!yesToken || !noToken) {
-      console.warn(`   ⚠️  市场数据不完整，跳过本次检查`);
-      return;
+    let yesTokenId: string | null = null;
+    let noTokenId: string | null = null;
+    
+    // 方法1: 从 tokens 数组获取
+    if (currentMarket.tokens && currentMarket.tokens.length >= 2) {
+      const yesToken = currentMarket.tokens.find((t: any) => 
+        t.outcome === 'Yes' || t.outcome === 'YES' || t.outcome === 'Up' || t.outcome === 'UP'
+      );
+      const noToken = currentMarket.tokens.find((t: any) => 
+        t.outcome === 'No' || t.outcome === 'NO' || t.outcome === 'Down' || t.outcome === 'DOWN'
+      );
+      
+      if (yesToken && noToken) {
+        yesTokenId = yesToken.tokenId || yesToken.id;
+        noTokenId = noToken.tokenId || noToken.id;
+      }
+    }
+    
+    // 方法2: 从 clobTokenIds 获取（如果 tokens 数组没有）
+    if ((!yesTokenId || !noTokenId) && currentMarket.clobTokenIds && currentMarket.clobTokenIds.length >= 2) {
+      yesTokenId = currentMarket.clobTokenIds[0];
+      noTokenId = currentMarket.clobTokenIds[1];
+    }
+    
+    // 方法3: 如果还是没有，尝试通过 Gamma API 获取
+    if ((!yesTokenId || !noTokenId) && currentMarket.slug) {
+      console.log(`   🔍 市场缺少 Token IDs，尝试通过 Gamma API 获取...`);
+      const tokenData = await getTokenIdsFromGammaAPI(currentMarket.slug);
+      if (tokenData) {
+        yesTokenId = tokenData.yesTokenId;
+        noTokenId = tokenData.noTokenId;
+        // 更新市场对象
+        currentMarket.clobTokenIds = [yesTokenId, noTokenId];
+        if (!currentMarket.tokens) {
+          currentMarket.tokens = [];
+        }
+        if (yesTokenId) {
+          currentMarket.tokens.push({ tokenId: yesTokenId, id: yesTokenId, outcome: 'Yes' });
+        }
+        if (noTokenId) {
+          currentMarket.tokens.push({ tokenId: noTokenId, id: noTokenId, outcome: 'No' });
+        }
+      }
     }
 
-    const yesTokenId = yesToken.tokenId || yesToken.id;
-    const noTokenId = noToken.tokenId || noToken.id;
+    if (!yesTokenId || !noTokenId) {
+      console.warn(`   ⚠️  无法获取 Token IDs，跳过本次检查`);
+      return;
+    }
 
     // 获取当前价格
     const yesPrice = await getCurrentPrice(yesTokenId);
@@ -596,6 +659,33 @@ async function main() {
     }
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
     
+    // 如果市场没有 Token IDs，尝试通过 Gamma API 获取
+    if ((!currentMarket.clobTokenIds || !currentMarket.tokens || currentMarket.tokens.length < 2) && currentMarket.slug) {
+      console.log(`   🔍 通过 Gamma API 获取 Token IDs...`);
+      const tokenData = await getTokenIdsFromGammaAPI(currentMarket.slug);
+      if (tokenData) {
+        currentMarket.clobTokenIds = [tokenData.yesTokenId, tokenData.noTokenId];
+        if (!currentMarket.tokens) {
+          currentMarket.tokens = [];
+        }
+        if (tokenData.yesTokenId && !currentMarket.tokens.find((t: any) => t.tokenId === tokenData.yesTokenId)) {
+          currentMarket.tokens.push({
+            tokenId: tokenData.yesTokenId,
+            id: tokenData.yesTokenId,
+            outcome: 'Yes',
+          });
+        }
+        if (tokenData.noTokenId && !currentMarket.tokens.find((t: any) => t.tokenId === tokenData.noTokenId)) {
+          currentMarket.tokens.push({
+            tokenId: tokenData.noTokenId,
+            id: tokenData.noTokenId,
+            outcome: 'No',
+          });
+        }
+        console.log(`   ✅ 已获取 Token IDs`);
+      }
+    }
+    
     // 获取并显示代币信息
     if (currentMarket.tokens && currentMarket.tokens.length >= 2) {
       const yesToken = currentMarket.tokens.find((t: any) => 
@@ -611,6 +701,18 @@ async function main() {
         console.log(`📊 当前价格:`);
         console.log(`   ${yesToken.outcome || 'YES'}: $${yesPrice.toFixed(4)}`);
         console.log(`   ${noToken.outcome || 'NO'}: $${noPrice.toFixed(4)}`);
+        if (yesToken.tokenId) {
+          console.log(`   YES Token ID: ${yesToken.tokenId.substring(0, 20)}...`);
+        }
+        if (noToken.tokenId) {
+          console.log(`   NO Token ID: ${noToken.tokenId.substring(0, 20)}...`);
+        }
+        console.log('');
+      } else if (currentMarket.clobTokenIds && currentMarket.clobTokenIds.length >= 2) {
+        // 如果 tokens 数组没有，但 clobTokenIds 有，显示 Token IDs
+        console.log(`📊 Token IDs:`);
+        console.log(`   YES Token ID: ${currentMarket.clobTokenIds[0].substring(0, 20)}...`);
+        console.log(`   NO Token ID: ${currentMarket.clobTokenIds[1].substring(0, 20)}...`);
         console.log('');
       }
     }
