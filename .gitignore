@@ -7,9 +7,6 @@ node_modules/
 .env.local
 .env.*.local
 
-# API 凭证
-.api-credentials.json
-
 # 构建输出
 dist/
 build/
@@ -32,8 +29,3 @@ pnpm-debug.log*
 # 操作系统
 .DS_Store
 Thumbs.db
-
-# 临时文件
-新建文本文档*.txt
-*.tmp
-stats/

@@ -19,7 +19,7 @@
 - **maxSizePerTrade**: 10 USDC（最大单笔交易金额）
 - **maxSlippage**: 0.03（最大滑点 3%）
 - **orderType**: FOK（Fill or Kill，完全成交或取消）
-- **minTradeSize**: 5 USDC（最小交易金额，小于此金额不跟单）
+- **minTradeSize**: 5 USDC（最小交易金额）
 
 ## 快速开始
 
@@ -36,6 +36,7 @@ pnpm install
 ```bash
 # 必需：Polymarket 私钥
 POLYMARKET_PRIVATE_KEY=your_private_key_here
+
 
 # 可选：指定要跟随的钱包地址（用逗号分隔）
 # 如果不设置，则跟随排行榜前 50 名
@@ -55,35 +56,44 @@ pnpm start
 pnpm dev
 ```
 
-### 4. 批量出售代币（可选）
+## 服务器部署
 
-如果需要批量出售所有持仓的代币：
+### 🚀 一键安装（推荐）
+
+最简单的方式，自动完成所有步骤：
 
 ```bash
-# 模拟模式（推荐先测试）- 不会真实出售
-npx tsx src/batch-sell.ts
+# 连接到服务器
+ssh root@你的服务器IP
 
-# 实盘模式（真实出售）
-npx tsx src/batch-sell.ts --real
-
-# 只出售高价代币（>= $0.1）
-npx tsx src/batch-sell.ts --real --min-price 0.1
-
-# 自定义参数（实盘模式 + 最小价格 + 滑点 + 延迟）
-npx tsx src/batch-sell.ts --real --min-price 0.1 --max-slippage 0.05 --delay 2000
-
-# 使用 pnpm 脚本
-pnpm batch-sell        # 模拟模式
-pnpm batch-sell-real   # 实盘模式
+# 下载并运行一键安装脚本
+curl -fsSL https://raw.githubusercontent.com/119969788/poly-copy-trading/main/install.sh -o install.sh
+chmod +x install.sh
+bash install.sh
 ```
 
-**参数说明**：
-- `--real` : 实盘模式（真实出售）
-- `--min-price <价格>` : 最小出售价格（例如：0.1）
-- `--max-slippage <滑点>` : 最大滑点（例如：0.05 = 5%）
-- `--delay <毫秒>` : 交易延迟（例如：2000 = 2秒）
+脚本会自动：
+- ✅ 安装 Node.js、pnpm、PM2、Git
+- ✅ 克隆项目
+- ✅ 安装依赖
+- ✅ 交互式配置私钥
+- ✅ 使用 PM2 启动应用
+- ✅ 设置开机自启
 
-详细命令参考：查看 `BATCH_SELL_COMMANDS.md` 或 `QUICK_COMMANDS.md`
+📖 **详细说明请查看：[一键安装脚本使用指南](./INSTALL_SCRIPT_GUIDE.md)**
+
+### 📝 手动部署
+
+📖 **详细的服务器部署指南请查看：[DEPLOY.md](./DEPLOY.md) 或 [快速安装教程](./QUICK_INSTALL.md)**
+
+快速部署步骤：
+
+1. 连接到服务器：`ssh root@你的服务器IP`
+2. 克隆仓库：`git clone https://github.com/119969788/poly-copy-trading.git`
+3. 进入目录：`cd poly-copy-trading`
+4. 运行部署脚本：`bash deploy.sh`
+5. 配置 `.env` 文件
+6. 启动：`pm2 start ecosystem.config.cjs`
 
 ## 使用说明
 
@@ -164,14 +174,6 @@ A: 如果已经授权过，授权错误可以忽略。如果首次授权失败�
 ### Q: 如何修改风险控制参数？
 
 A: 编辑 `src/index.ts` 中的 `copyTradingOptions` 对象。
-
-### Q: 如何批量出售所有持仓？
-
-A: 运行 `pnpm batch-sell` 命令。支持以下参数：
-- `--min-price <价格>`: 设置最小出售价格（低于此价格不出售）
-- `--max-slippage <滑点>`: 设置最大滑点（默认 0.03 = 3%）
-- `--delay <毫秒>`: 设置每笔交易之间的延迟（默认 1000ms）
-- `--real`: 实盘模式（真实出售，默认是模拟模式）
 
 ## Git 仓库初始化
 
