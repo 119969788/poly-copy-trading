@@ -1,16 +1,8 @@
 // 15分钟套利策略
 // 赔率80买（价格<=0.80买入），90卖（价格>=0.90卖出）
 
-// 尝试静态导入（与 index.ts 和 batch-sell.ts 一致）
-let PolySDK: any;
-try {
-  // 方式1: 尝试使用 PolySDK (与 index.ts 和 batch-sell.ts 一致)
-  const sdkModule = require('@catalyst-team/poly-sdk');
-  PolySDK = sdkModule.PolySDK || sdkModule.default || sdkModule;
-} catch (e) {
-  // 如果 require 失败，尝试动态导入
-}
-
+// 使用与 index.ts 和 batch-sell.ts 完全相同的导入方式
+// 如果服务器上的 SDK 版本不支持 PolySDK，将在 initializeSDK 中使用动态导入作为回退
 import dotenv from 'dotenv';
 
 // 加载环境变量
@@ -48,30 +40,24 @@ const positions = new Map<string, PositionRecord>(); // tokenId -> PositionRecor
 // 初始化 SDK - 尝试多种导入方式
 async function initializeSDK() {
   try {
-    // 方式1: 尝试使用已导入的 PolySDK（静态导入，与 index.ts 一致）
-    if (PolySDK && typeof PolySDK === 'function') {
-      try {
-        sdk = new PolySDK({ privateKey });
-        console.log('✅ 使用 PolySDK (静态导入) 初始化成功');
-        return;
-      } catch (e: any) {
-        console.warn('   ⚠️  静态导入的 PolySDK 初始化失败，尝试其他方式...');
-      }
-    }
-
-    // 方式2: 尝试使用动态导入 PolySDK
+    // 方式1: 尝试使用静态导入的 PolySDK（与 index.ts 一致）
+    // 注意：如果静态导入失败，这个方式不会执行
     try {
-      const { PolySDK: DynamicPolySDK } = await import('@catalyst-team/poly-sdk');
-      if (DynamicPolySDK && typeof DynamicPolySDK === 'function') {
-        sdk = new DynamicPolySDK({ privateKey });
-        console.log('✅ 使用 PolySDK (动态导入) 初始化成功');
+      // 动态导入 PolySDK
+      const { PolySDK } = await import('@catalyst-team/poly-sdk');
+      if (PolySDK && typeof PolySDK === 'function') {
+        sdk = new PolySDK({ privateKey });
+        console.log('✅ 使用 PolySDK 初始化成功');
         return;
       }
-    } catch (e) {
-      // 继续尝试其他方式
+    } catch (e: any) {
+      // 如果 PolySDK 不存在，继续尝试其他方式
+      if (e?.message?.includes('does not provide an export named')) {
+        console.log('   ℹ️  PolySDK 导出不存在，尝试其他方式...');
+      }
     }
 
-    // 方式3: 尝试使用 PolymarketSDK (与 dip-arb-15m.ts 一致)
+    // 方式2: 尝试使用 PolymarketSDK (与 dip-arb-15m.ts 一致)
     try {
       const { PolymarketSDK } = await import('@catalyst-team/poly-sdk');
       if (PolymarketSDK && typeof PolymarketSDK.create === 'function') {
@@ -83,33 +69,57 @@ async function initializeSDK() {
         console.log('✅ 使用 PolymarketSDK (new) 初始化成功');
         return;
       }
-    } catch (e) {
+    } catch (e: any) {
       // 继续尝试其他方式
+      if (e?.message?.includes('does not provide an export named')) {
+        console.log('   ℹ️  PolymarketSDK 导出不存在，尝试其他方式...');
+      }
     }
 
-    // 方式4: 尝试使用 default export
+    // 方式3: 尝试使用 default export 或整个模块
     try {
       const sdkModule = await import('@catalyst-team/poly-sdk');
-      const SDKClass = sdkModule.default || sdkModule;
-      if (SDKClass && typeof SDKClass === 'function') {
-        if (typeof SDKClass.create === 'function') {
-          sdk = await SDKClass.create({ privateKey });
-        } else {
-          sdk = new SDKClass({ privateKey });
+      
+      // 检查是否有 default export
+      if (sdkModule.default) {
+        const SDKClass = sdkModule.default;
+        if (typeof SDKClass === 'function') {
+          if (typeof SDKClass.create === 'function') {
+            sdk = await SDKClass.create({ privateKey });
+            console.log('✅ 使用 default.create() 初始化成功');
+            return;
+          } else {
+            sdk = new SDKClass({ privateKey });
+            console.log('✅ 使用 default (new) 初始化成功');
+            return;
+          }
         }
-        console.log('✅ 使用 default export 初始化成功');
+      }
+      
+      // 检查模块本身是否是构造函数
+      if (typeof sdkModule === 'function') {
+        sdk = new sdkModule({ privateKey });
+        console.log('✅ 使用模块本身初始化成功');
         return;
       }
+      
+      // 列出所有可用的导出
+      const exports = Object.keys(sdkModule).filter(key => 
+        typeof sdkModule[key as keyof typeof sdkModule] === 'function'
+      );
+      console.log(`   ℹ️  可用的导出: ${exports.join(', ')}`);
+      
     } catch (e) {
       // 所有方式都失败
     }
 
     // 如果所有方式都失败，提供详细的诊断信息
     console.error('❌ 所有 SDK 初始化方式都失败了');
-    console.error('   请检查服务器上的 SDK 安装：');
+    console.error('   请检查服务器上的 SDK 安装和导出：');
     console.error('   1. npm list @catalyst-team/poly-sdk');
-    console.error('   2. cat node_modules/@catalyst-team/poly-sdk/package.json | grep -E "main|exports"');
+    console.error('   2. cat node_modules/@catalyst-team/poly-sdk/package.json | grep -E "main|exports|module"');
     console.error('   3. ls -la node_modules/@catalyst-team/poly-sdk/');
+    console.error('   4. node -e "const sdk = require(\'@catalyst-team/poly-sdk\'); console.log(Object.keys(sdk))"');
     throw new Error('无法初始化 SDK：未找到有效的 SDK 构造函数');
   } catch (error: any) {
     console.error('❌ SDK 初始化失败:', error?.message || error);
