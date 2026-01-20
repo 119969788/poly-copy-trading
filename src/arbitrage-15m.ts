@@ -73,7 +73,54 @@ async function find15mMarket(coin: string): Promise<any> {
   }
 
   try {
-    // 方法1: 使用 markets 服务，尝试常见的市场 slug 格式
+    // 方法1（推荐）: 使用 dipArb 服务查找市场（专门用于15分钟市场）
+    if (sdk.dipArb && typeof sdk.dipArb.findAndStart === 'function') {
+      try {
+        console.log(`   🔍 使用 dipArb 服务查找 ${coin} 15分钟市场...`);
+        const result = await sdk.dipArb.findAndStart({
+          coin,
+          preferDuration: '15m',
+        });
+        
+        if (result && result.market) {
+          console.log(`   ✅ 通过 dipArb 找到市场: ${result.market.name || result.market.slug || 'N/A'}`);
+          // 停止 dipArb（我们只需要市场信息，不使用它的交易功能）
+          if (typeof sdk.dipArb.stop === 'function') {
+            await sdk.dipArb.stop();
+          }
+          return result.market;
+        }
+      } catch (e: any) {
+        console.log(`   ⚠️  dipArb 查找失败: ${e?.message || e}`);
+      }
+    }
+
+    // 方法2: 直接调用 Gamma API 搜索市场（不依赖 SDK 版本）
+    try {
+      console.log(`   🔍 使用 Gamma API 搜索 ${coin} 15分钟市场...`);
+      const searchUrl = `https://gamma-api.polymarket.com/public-search?query=${encodeURIComponent(`${coin} 15m`)}&limit=20`;
+      const response = await fetch(searchUrl);
+      
+      if (response.ok) {
+        const data = await response.json();
+        const markets = data?.markets || data?.results || data || [];
+        
+        // 查找15分钟市场
+        for (const market of markets) {
+          if (market.duration === '15m' || market.duration === '15分钟' || 
+              market.slug?.includes('15m') || market.slug?.includes('15分钟') ||
+              market.name?.toLowerCase().includes('15m') ||
+              market.name?.toLowerCase().includes('15分钟')) {
+            console.log(`   ✅ 通过 Gamma API 找到市场: ${market.slug || market.name || 'N/A'}`);
+            return market;
+          }
+        }
+      }
+    } catch (e: any) {
+      console.log(`   ⚠️  Gamma API 搜索失败: ${e?.message || e}`);
+    }
+
+    // 方法3: 使用 markets 服务，尝试常见的市场 slug 格式
     if (sdk.markets) {
       const possibleSlugs = [
         `${coin.toLowerCase()}-15m-up-down`,
@@ -100,7 +147,7 @@ async function find15mMarket(coin: string): Promise<any> {
       }
     }
 
-    // 方法2: 使用 gammaApi 搜索（如果方法存在）
+    // 方法4: 尝试使用 gammaApi（如果方法存在且版本支持）
     if (sdk.gammaApi) {
       try {
         // 尝试不同的方法名
@@ -128,7 +175,7 @@ async function find15mMarket(coin: string): Promise<any> {
                     market.slug?.includes('15m') || market.slug?.includes('15分钟') ||
                     market.name?.toLowerCase().includes('15m') ||
                     market.name?.toLowerCase().includes('15分钟')) {
-                  console.log(`   ✅ 通过搜索找到市场: ${market.slug || market.name || 'N/A'}`);
+                  console.log(`   ✅ 通过 gammaApi 找到市场: ${market.slug || market.name || 'N/A'}`);
                   return market;
                 }
               }
@@ -145,33 +192,8 @@ async function find15mMarket(coin: string): Promise<any> {
       }
     }
 
-    // 方法3: 使用 dipArb 服务查找市场（如果可用）
-    if (sdk.dipArb && typeof sdk.dipArb.findAndStart === 'function') {
-      try {
-        console.log(`   🔍 使用 dipArb 服务查找市场...`);
-        const result = await sdk.dipArb.findAndStart({
-          coin,
-          preferDuration: '15m',
-        });
-        
-        if (result && result.market) {
-          console.log(`   ✅ 通过 dipArb 找到市场: ${result.market.name || result.market.slug || 'N/A'}`);
-          // 停止 dipArb（我们只需要市场信息）
-          if (typeof sdk.dipArb.stop === 'function') {
-            await sdk.dipArb.stop();
-          }
-          return result.market;
-        }
-      } catch (e: any) {
-        console.log(`   ⚠️  dipArb 查找失败: ${e?.message || e}`);
-      }
-    }
-
-    // 方法4: 尝试使用 getMarket 通过 condition ID（如果知道的话）
-    // 这里可以添加已知的 condition ID
-
     console.warn(`   ⚠️  未找到 ${coin} 15分钟市场`);
-    console.warn(`   提示：可以手动设置 ARBITRAGE_TOKEN_ID 环境变量来指定代币ID`);
+    console.warn(`   提示：可以手动设置 ARBITRAGE_CONDITION_ID 环境变量来指定市场`);
     return null;
   } catch (error: any) {
     console.error(`   ❌ 查找市场失败:`, error?.message || error);
