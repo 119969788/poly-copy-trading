@@ -67,6 +67,49 @@ function printConfig() {
   console.log('');
 }
 
+// 通过 Gamma API 获取 Token IDs（辅助函数）
+async function getTokenIdsFromGammaAPI(marketSlug: string): Promise<{ yesTokenId: string | null; noTokenId: string | null; market: any } | null> {
+  try {
+    // 方法1: 尝试通过市场 slug 获取
+    const marketUrl = `https://gamma-api.polymarket.com/markets?slug=${marketSlug}`;
+    let marketRes = await fetch(marketUrl);
+    
+    // 如果失败，尝试 path 参数方式
+    if (!marketRes.ok) {
+      const marketUrl2 = `https://gamma-api.polymarket.com/markets/slug/${marketSlug}`;
+      marketRes = await fetch(marketUrl2);
+    }
+    
+    if (!marketRes.ok) {
+      return null;
+    }
+    
+    const marketData = await marketRes.json();
+    const market = Array.isArray(marketData) ? marketData[0] : marketData;
+    
+    if (!market || !market.clobTokenIds || market.clobTokenIds.length < 2) {
+      return null;
+    }
+    
+    // 确保 clobTokenIds 是数组且元素是字符串
+    const clobTokenIds = Array.isArray(market.clobTokenIds) 
+      ? market.clobTokenIds.map((id: any) => String(id))
+      : [];
+    
+    if (clobTokenIds.length < 2) {
+      return null;
+    }
+    
+    return {
+      yesTokenId: clobTokenIds[0],
+      noTokenId: clobTokenIds[1],
+      market: market,
+    };
+  } catch (error: any) {
+    return null;
+  }
+}
+
 // 规范化 outcomes 字段（防御式解析）
 function normalizeOutcomes(outcomes: any): Array<{ outcome: string; tokenId?: string; price?: number }> {
   // 如果已经是数组，直接返回
@@ -171,14 +214,37 @@ async function getMarketByEventSlug(eventSlug: string): Promise<any> {
     console.log(`   ✅ 成功获取市场数据`);
     
     // 4. 提取关键信息（只使用 clobTokenIds，不从 outcomes 推断）
-    const clobTokenIds = market.clobTokenIds || [];
+    // 确保 clobTokenIds 是数组
+    let clobTokenIds: string[] = [];
+    if (Array.isArray(market.clobTokenIds)) {
+      clobTokenIds = market.clobTokenIds.map((id: any) => String(id));
+    } else if (typeof market.clobTokenIds === 'string') {
+      // 如果是字符串，尝试解析为数组
+      try {
+        const parsed = JSON.parse(market.clobTokenIds);
+        if (Array.isArray(parsed)) {
+          clobTokenIds = parsed.map((id: any) => String(id));
+        }
+      } catch (e) {
+        // 解析失败，忽略
+      }
+    }
+    
     const conditionId = market.conditionId || eventData.markets[0].conditionId;
     
-    // 验证 clobTokenIds 是否存在
+    // 验证 clobTokenIds 是否存在且格式正确
     if (!clobTokenIds || clobTokenIds.length < 2) {
-      console.error(`   ❌ 市场数据缺少 clobTokenIds（必需字段）`);
+      console.error(`   ❌ 市场数据缺少有效的 clobTokenIds（必需字段）`);
       console.error(`   提示：请检查市场是否有效，或尝试其他市场`);
       return null;
+    }
+    
+    // 验证每个 tokenId 都是纯数字字符串
+    for (let i = 0; i < clobTokenIds.length; i++) {
+      if (!/^\d+$/.test(clobTokenIds[i])) {
+        console.error(`   ❌ Token ID ${i} 格式错误（应该是纯数字）: ${clobTokenIds[i].substring(0, 20)}...`);
+        return null;
+      }
     }
     
     // 规范化 outcomes（仅用于显示标签，不用于 tokenId）
@@ -723,16 +789,34 @@ async function mainLoop() {
     let noTokenId: string | null = null;
     
     // 方法1（最优先）: 直接从 clobTokenIds 获取（这是官方 CLOB 代币ID）
-    if (currentMarket.clobTokenIds && currentMarket.clobTokenIds.length >= 2) {
-      yesTokenId = currentMarket.clobTokenIds[0];
-      noTokenId = currentMarket.clobTokenIds[1];
-      // 验证 tokenId 格式（应该是数字字符串）
-      if (yesTokenId && noTokenId && /^\d+$/.test(yesTokenId) && /^\d+$/.test(noTokenId)) {
-        // Token IDs 有效，继续使用
-      } else {
-        console.warn(`   ⚠️  clobTokenIds 格式异常，尝试其他方法...`);
-        yesTokenId = null;
-        noTokenId = null;
+    if (currentMarket.clobTokenIds) {
+      // 确保 clobTokenIds 是数组
+      let clobTokenIds: string[] = [];
+      if (Array.isArray(currentMarket.clobTokenIds)) {
+        clobTokenIds = currentMarket.clobTokenIds.map((id: any) => String(id));
+      } else if (typeof currentMarket.clobTokenIds === 'string') {
+        // 如果是字符串，尝试解析
+        try {
+          const parsed = JSON.parse(currentMarket.clobTokenIds);
+          if (Array.isArray(parsed)) {
+            clobTokenIds = parsed.map((id: any) => String(id));
+          }
+        } catch (e) {
+          // 解析失败
+        }
+      }
+      
+      if (clobTokenIds.length >= 2) {
+        yesTokenId = clobTokenIds[0];
+        noTokenId = clobTokenIds[1];
+        // 验证 tokenId 格式（应该是纯数字字符串）
+        if (yesTokenId && noTokenId && /^\d+$/.test(yesTokenId) && /^\d+$/.test(noTokenId)) {
+          // Token IDs 有效，继续使用
+        } else {
+          console.warn(`   ⚠️  clobTokenIds 格式异常（不是纯数字），尝试其他方法...`);
+          yesTokenId = null;
+          noTokenId = null;
+        }
       }
     }
     
