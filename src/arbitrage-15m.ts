@@ -562,6 +562,177 @@ async function find15mMarket(coin: string): Promise<any> {
 // 市场关闭标记（避免重复尝试已关闭的市场）
 let marketClosedTokens = new Set<string>();
 
+// 连续404计数（用于触发市场切换）
+let consecutive404Count = 0;
+const MAX_CONSECUTIVE_404 = 2; // 连续2次404就切换市场
+
+// 探测token是否在CLOB可交易（探针函数）
+async function probeTokenTradable(tokenId: string): Promise<boolean> {
+  try {
+    // 方法1: 先用轻量的price接口探测（更快更轻量）
+    try {
+      const priceUrl = `https://clob.polymarket.com/price?token_id=${tokenId}&side=buy`;
+      const priceRes = await fetch(priceUrl);
+      if (priceRes.status === 200) {
+        return true; // 可交易
+      }
+      if (priceRes.status === 404) {
+        return false; // 不可交易
+      }
+    } catch (e) {
+      // 继续尝试book接口
+    }
+
+    // 方法2: 用book接口探测（兜底）
+    const bookUrl = `https://clob.polymarket.com/book?token_id=${tokenId}`;
+    const bookRes = await fetch(bookUrl);
+    if (bookRes.status === 200) {
+      return true; // 可交易
+    }
+    if (bookRes.status === 404) {
+      return false; // 不可交易
+    }
+
+    // 其他状态码，保守返回false
+    return false;
+  } catch (error: any) {
+    // 网络错误等，保守返回false
+    return false;
+  }
+}
+
+// 确保获取到可交易的15分钟市场
+async function ensureWorkingMarket(coin: string): Promise<any> {
+  console.log(`   🔍 正在查找最新的可交易 ${coin} 15分钟市场...`);
+  
+  // 最多尝试10次
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      // 获取最新的15分钟市场（确保是active/open状态）
+      const market = await findLatestActive15mMarket(coin);
+      
+      if (!market || !market.clobTokenIds || market.clobTokenIds.length < 2) {
+        console.log(`   ⚠️  第 ${attempt + 1} 次尝试：未找到有效的市场数据`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+
+      const [upTokenId, downTokenId] = market.clobTokenIds.map((id: any) => String(id));
+
+      // 探测两个token是否都可交易
+      console.log(`   🔍 探测市场可交易性...`);
+      const upTradable = await probeTokenTradable(upTokenId);
+      const downTradable = await probeTokenTradable(downTokenId);
+
+      if (upTradable && downTradable) {
+        console.log(`   ✅ 找到可交易的市场: ${market.slug || market.name || 'N/A'}`);
+        // 清除关闭标记
+        marketClosedTokens.clear();
+        consecutive404Count = 0;
+        return market;
+      } else {
+        console.log(`   ⚠️  第 ${attempt + 1} 次尝试：市场在CLOB不可交易`);
+        console.log(`      UP token 可交易: ${upTradable ? '✅' : '❌'}`);
+        console.log(`      DOWN token 可交易: ${downTradable ? '✅' : '❌'}`);
+      }
+
+      // 等待一段时间再尝试（避免API限流）
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    } catch (error: any) {
+      console.log(`   ⚠️  第 ${attempt + 1} 次尝试失败: ${error?.message || error}`);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+
+  throw new Error(`找不到可交易的 ${coin} 15分钟市场（CLOB侧无订单簿）`);
+}
+
+// 查找最新的活跃15分钟市场（确保是active/open状态）
+async function findLatestActive15mMarket(coin: string): Promise<any> {
+  if (!sdk) {
+    return null;
+  }
+
+  try {
+    // 方法1: 使用Gamma API搜索最新的活跃市场
+    try {
+      console.log(`   🔍 通过Gamma API搜索最新的活跃 ${coin} 15分钟市场...`);
+      const searchUrl = `https://gamma-api.polymarket.com/public-search?query=${encodeURIComponent(`${coin} 15m`)}&limit=50`;
+      const response = await fetch(searchUrl);
+      
+      if (response.ok) {
+        const data = await response.json();
+        const markets = data?.markets || data?.results || data || [];
+        
+        // 过滤出15分钟市场，并按活跃状态和时间排序
+        const active15mMarkets = markets
+          .filter((m: any) => {
+            const is15m = m.duration === '15m' || 
+                         m.duration === '15分钟' || 
+                         m.slug?.includes('15m') || 
+                         m.slug?.includes('15分钟') ||
+                         m.name?.toLowerCase().includes('15m') ||
+                         m.name?.toLowerCase().includes('15分钟');
+            
+            // 优先选择active/open状态的市场
+            const isActive = m.active === true || 
+                            m.status === 'active' || 
+                            m.status === 'open' ||
+                            m.active === undefined; // 如果没有状态字段，也尝试
+            
+            return is15m && isActive;
+          })
+          .sort((a: any, b: any) => {
+            // 按创建时间或开始时间排序，最新的在前
+            const timeA = a.startDate || a.createdAt || a.startTime || 0;
+            const timeB = b.startDate || b.createdAt || b.startTime || 0;
+            return timeB - timeA; // 降序
+          });
+
+        if (active15mMarkets.length > 0) {
+          const market = active15mMarkets[0];
+          console.log(`   ✅ 找到最新的活跃市场: ${market.slug || market.name || 'N/A'}`);
+          
+          // 如果市场没有完整的clobTokenIds，通过Gamma API获取
+          if (!market.clobTokenIds && market.slug) {
+            const tokenData = await getTokenIdsFromGammaAPI(market.slug);
+            if (tokenData) {
+              market.clobTokenIds = [tokenData.yesTokenId, tokenData.noTokenId];
+              if (!market.tokens) {
+                market.tokens = [];
+              }
+              if (tokenData.yesTokenId) {
+                market.tokens.push({
+                  tokenId: tokenData.yesTokenId,
+                  id: tokenData.yesTokenId,
+                  outcome: 'Yes',
+                });
+              }
+              if (tokenData.noTokenId) {
+                market.tokens.push({
+                  tokenId: tokenData.noTokenId,
+                  id: tokenData.noTokenId,
+                  outcome: 'No',
+                });
+              }
+            }
+          }
+          
+          return market;
+        }
+      }
+    } catch (e: any) {
+      console.log(`   ⚠️  Gamma API搜索失败: ${e?.message || e}`);
+    }
+
+    // 方法2: 回退到原有的查找逻辑
+    return await find15mMarket(coin);
+  } catch (error: any) {
+    console.error(`   ❌ 查找最新活跃市场失败:`, error?.message || error);
+    return null;
+  }
+}
+
 // 获取当前市场价格
 async function getCurrentPrice(tokenId: string): Promise<number | null> {
   if (!sdk) {
@@ -964,65 +1135,71 @@ async function mainLoop() {
     const yesPrice = await getCurrentPrice(yesTokenId);
     const noPrice = await getCurrentPrice(noTokenId);
 
-    // 如果无法获取价格，检查市场状态
+    // 如果无法获取价格，检查市场是否在CLOB可交易
     if (yesPrice === null && noPrice === null) {
-      // 如果两个token都被标记为市场关闭，只输出一次警告
-      const bothClosed = marketClosedTokens.has(yesTokenId) && marketClosedTokens.has(noTokenId);
+      // 探测两个token是否在CLOB可交易
+      const upTradable = await probeTokenTradable(yesTokenId);
+      const downTradable = await probeTokenTradable(noTokenId);
       
-      if (!bothClosed) {
-        // 首次检测到市场关闭，输出警告
-        console.warn(`   ⚠️  无法获取价格（市场可能已关闭或订单簿不存在）`);
-      }
-      
-      // 检查市场是否已关闭
-      const marketStatus = await checkMarketStatus(currentMarket);
-      if (marketStatus === 'closed' || marketStatus === 'ended' || bothClosed) {
-        // 标记所有token为已关闭
-        if (yesTokenId) marketClosedTokens.add(yesTokenId);
-        if (noTokenId) marketClosedTokens.add(noTokenId);
+      // 如果任意一个token不可交易（404），增加连续404计数
+      if (!upTradable || !downTradable) {
+        consecutive404Count++;
         
-        // 只在首次检测到时输出警告
-        if (!bothClosed) {
-          console.warn(`   ⚠️  市场已关闭，尝试查找新的活跃市场...`);
-        }
+        console.warn(`   ⚠️  检测到CLOB订单簿不可用（404）`);
+        console.warn(`      UP token 可交易: ${upTradable ? '✅' : '❌'}`);
+        console.warn(`      DOWN token 可交易: ${downTradable ? '✅' : '❌'}`);
+        console.warn(`      连续404次数: ${consecutive404Count}/${MAX_CONSECUTIVE_404}`);
         
-        // 每5次循环尝试一次查找新市场（避免频繁尝试）
-        const retryCount = (global as any).marketRetryCount || 0;
-        (global as any).marketRetryCount = retryCount + 1;
+        // 标记为不可交易
+        if (!upTradable) marketClosedTokens.add(yesTokenId);
+        if (!downTradable) marketClosedTokens.add(noTokenId);
         
-        if (retryCount % 5 === 0) {
-          // 尝试查找新的活跃市场
-          const newMarket = await find15mMarket(MARKET_COIN);
-          if (newMarket && newMarket.slug !== currentMarket.slug) {
-            console.log(`   ✅ 找到新的活跃市场: ${newMarket.slug || newMarket.name || 'N/A'}`);
-            currentMarket = newMarket;
+        // 如果连续404达到阈值，切换到最新市场
+        if (consecutive404Count >= MAX_CONSECUTIVE_404) {
+          console.warn(`   🔄 连续${MAX_CONSECUTIVE_404}次404，切换到最新可交易市场...`);
+          
+          try {
+            // 获取最新的可交易市场
+            const newMarket = await ensureWorkingMarket(MARKET_COIN);
             
-            // 清除关闭标记，重置重试计数
-            marketClosedTokens.clear();
-            (global as any).marketRetryCount = 0;
-            
-            // 重新订阅实时价格
-            if (sdk.realtime && newMarket.tokens) {
-              const tokenIds = newMarket.tokens
-                .map((t: any) => t.tokenId || t.id)
-                .filter(Boolean);
-              if (tokenIds.length > 0) {
-                sdk.realtime.subscribeMarket(tokenIds);
-                console.log(`   ✅ 已订阅新市场的实时价格更新`);
+            if (newMarket && newMarket.slug !== currentMarket.slug) {
+              console.log(`   ✅ 已切换到新市场: ${newMarket.slug || newMarket.name || 'N/A'}`);
+              currentMarket = newMarket;
+              
+              // 清除关闭标记，重置计数
+              marketClosedTokens.clear();
+              consecutive404Count = 0;
+              
+              // 重新订阅实时价格
+              if (sdk.realtime && newMarket.tokens) {
+                const tokenIds = newMarket.tokens
+                  .map((t: any) => t.tokenId || t.id)
+                  .filter(Boolean);
+                if (tokenIds.length > 0) {
+                  sdk.realtime.subscribeMarket(tokenIds);
+                  console.log(`   ✅ 已订阅新市场的实时价格更新`);
+                }
               }
+              
+              // 继续下一次循环（使用新市场）
+              return;
+            } else {
+              console.error(`   ❌ 无法切换到新市场，请检查网络或手动更新 ARBITRAGE_EVENT_SLUG`);
             }
-            
-            // 继续下一次循环（使用新市场）
-            return;
-          } else if (retryCount === 0) {
-            // 只在首次失败时输出提示
-            console.warn(`   ⚠️  未找到新的活跃市场，请手动更新 ARBITRAGE_EVENT_SLUG`);
-            console.warn(`   💡 提示：将每5次循环尝试一次查找新市场`);
+          } catch (error: any) {
+            console.error(`   ❌ 切换市场失败: ${error?.message || error}`);
+            console.error(`   💡 提示：请手动更新 ARBITRAGE_EVENT_SLUG 环境变量`);
           }
         }
+      } else {
+        // 如果可交易，重置404计数
+        consecutive404Count = 0;
       }
       
       return;
+    } else {
+      // 如果成功获取价格，重置404计数
+      consecutive404Count = 0;
     }
     
     // 如果只有一个价格获取失败，使用另一个价格推算（YES + NO = 1）
@@ -1122,9 +1299,37 @@ async function main() {
       }
     }
     
-    // 使用统一的查找函数
+    // 使用统一的查找函数，确保获取到可交易的市场
     // 如果设置了 EVENT_SLUG，优先使用，失败时自动回退到搜索
-    currentMarket = await find15mMarket(MARKET_COIN);
+    if (EVENT_SLUG) {
+      // 如果指定了事件slug，先尝试使用它
+      console.log(`   🔍 优先使用指定的事件 slug: ${EVENT_SLUG}`);
+      const marketBySlug = await getMarketByEventSlug(EVENT_SLUG);
+      if (marketBySlug) {
+        // 探测是否可交易
+        const [upId, downId] = marketBySlug.clobTokenIds || [];
+        if (upId && downId) {
+          const upTradable = await probeTokenTradable(String(upId));
+          const downTradable = await probeTokenTradable(String(downId));
+          if (upTradable && downTradable) {
+            currentMarket = marketBySlug;
+            console.log(`   ✅ 指定的事件slug对应的市场可交易`);
+          } else {
+            console.log(`   ⚠️  指定的事件slug对应的市场在CLOB不可交易，切换到最新市场...`);
+            currentMarket = await ensureWorkingMarket(MARKET_COIN);
+          }
+        } else {
+          console.log(`   ⚠️  指定的事件slug缺少token IDs，切换到最新市场...`);
+          currentMarket = await ensureWorkingMarket(MARKET_COIN);
+        }
+      } else {
+        console.log(`   ⚠️  无法通过指定的事件slug获取市场，切换到最新市场...`);
+        currentMarket = await ensureWorkingMarket(MARKET_COIN);
+      }
+    } else {
+      // 没有指定slug，直接获取最新的可交易市场
+      currentMarket = await ensureWorkingMarket(MARKET_COIN);
+    }
 
     // 如果找不到市场，尝试使用手动指定的代币ID或条件ID
     if (!currentMarket) {
