@@ -1,0 +1,32 @@
+需要上传的文件清单
+====================
+
+本次更新需要上传以下文件：
+
+【新增文件】
+✅ src/batch-sell.ts
+✅ COMMIT_GUIDE.md
+✅ UPLOAD_FILES_LIST.txt
+
+【修改的文件】
+✅ src/index.ts
+✅ package.json
+✅ README.md
+
+【保持不变的文件】
+✅ tsconfig.json
+✅ .gitignore
+✅ env.example.txt
+
+【不要上传的文件】
+❌ .env (包含私钥)
+❌ node_modules/ (依赖包)
+❌ stats/ (统计文件)
+❌ dist/ (构建输出)
+❌ 新建文本文档*.txt (临时文件)
+
+====================
+上传方法：
+1. 如果服务器上有 Git，可以使用 git pull 或手动上传
+2. 使用 FTP/SFTP 工具上传文件
+3. 直接在服务器上编辑文件

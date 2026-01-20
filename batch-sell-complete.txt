@@ -90,46 +90,17 @@ async function batchSellTokens(options: BatchSellOptions = {}) {
     // 遍历并出售每个持仓
     for (let i = 0; i < positions.length; i++) {
       const position = positions[i];
+      const tokenId = position.tokenId || position.id;
       const marketId = position.marketId || position.market;
-      const conditionId = position.conditionId || position.condition || marketId;
-      let tokenId = position.tokenId || position.id || position.positionId || position.collectionId;
-      const direction = position.direction || position.outcome || position.side;
       const amount = parseFloat(position.amount || position.balance || '0');
       const price = parseFloat(position.price || position.currentPrice || '0');
 
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log(`📈 持仓 #${i + 1}/${positions.length}`);
       console.log(`   市场: ${marketId || 'N/A'}`);
-      if (conditionId) {
-        console.log(`   条件ID: ${conditionId}`);
-      }
-      if (direction) {
-        console.log(`   方向: ${direction}`);
-      }
       console.log(`   代币ID: ${tokenId || 'N/A'}`);
       console.log(`   数量: ${amount}`);
       console.log(`   当前价格: $${price.toFixed(4)}`);
-
-      // 如果 tokenId 不存在，打印调试信息并跳过
-      if (!tokenId) {
-        // 打印完整数据结构（仅第一个用于调试）
-        if (i === 0) {
-          console.log(`   ⚠️  调试信息（第一个持仓的完整数据）:`);
-          try {
-            const positionStr = JSON.stringify(position, null, 2);
-            console.log(`   ${positionStr.substring(0, 800)}${positionStr.length > 800 ? '...' : ''}`);
-          } catch (e) {
-            console.log(`   无法序列化持仓数据`);
-          }
-        }
-        
-        console.log(`   ⏭️  跳过：代币ID不存在，无法出售`);
-        console.log(`   提示：持仓数据中缺少 tokenId/positionId/collectionId 字段`);
-        console.log(`   建议：检查 SDK 版本或使用不同的获取持仓方法`);
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-        failCount++;
-        continue;
-      }
 
       // 检查最小价格
       if (minPrice > 0 && price < minPrice) {

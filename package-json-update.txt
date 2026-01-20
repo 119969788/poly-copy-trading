@@ -1,0 +1,15 @@
+在 package.json 的 "scripts" 部分添加以下两行：
+
+    "batch-sell": "tsx src/batch-sell.ts",
+    "batch-sell-real": "tsx src/batch-sell.ts --real",
+
+完整的 scripts 部分应该是：
+
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "batch-sell": "tsx src/batch-sell.ts",
+    "batch-sell-real": "tsx src/batch-sell.ts --real"
+  },

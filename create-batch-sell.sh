@@ -1,3 +1,47 @@
+#!/bin/bash
+
+# 在服务器上创建 batch-sell.ts 文件的脚本
+# 使用方法: bash create-batch-sell.sh
+
+echo "=========================================="
+echo "创建 batch-sell.ts 文件"
+echo "=========================================="
+echo ""
+
+# 检测项目目录
+PROJECT_DIRS=(
+    "/root/projects/poly-copy-trading"
+    "/root/poly-copy-trading"
+    "$HOME/poly-copy-trading"
+    "$(pwd)"
+)
+
+PROJECT_DIR=""
+for dir in "${PROJECT_DIRS[@]}"; do
+    if [ -f "$dir/package.json" ]; then
+        PROJECT_DIR="$dir"
+        break
+    fi
+done
+
+if [ -z "$PROJECT_DIR" ]; then
+    echo "❌ 错误：找不到项目目录"
+    echo "   请手动指定项目路径，或确保在项目根目录运行此脚本"
+    read -p "请输入项目路径（或按 Enter 使用当前目录）: " PROJECT_DIR
+    if [ -z "$PROJECT_DIR" ]; then
+        PROJECT_DIR="$(pwd)"
+    fi
+fi
+
+echo "✅ 使用项目目录: $PROJECT_DIR"
+cd "$PROJECT_DIR" || exit 1
+
+# 创建 src 目录
+mkdir -p src
+echo "✅ src 目录已准备"
+
+# 创建 batch-sell.ts 文件
+cat > src/batch-sell.ts << 'BATCH_SELL_EOF'
 import { PolySDK } from '@catalyst-team/poly-sdk';
 import dotenv from 'dotenv';
 
@@ -90,46 +134,17 @@ async function batchSellTokens(options: BatchSellOptions = {}) {
     // 遍历并出售每个持仓
     for (let i = 0; i < positions.length; i++) {
       const position = positions[i];
+      const tokenId = position.tokenId || position.id;
       const marketId = position.marketId || position.market;
-      const conditionId = position.conditionId || position.condition || marketId;
-      let tokenId = position.tokenId || position.id || position.positionId || position.collectionId;
-      const direction = position.direction || position.outcome || position.side;
       const amount = parseFloat(position.amount || position.balance || '0');
       const price = parseFloat(position.price || position.currentPrice || '0');
 
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log(`📈 持仓 #${i + 1}/${positions.length}`);
       console.log(`   市场: ${marketId || 'N/A'}`);
-      if (conditionId) {
-        console.log(`   条件ID: ${conditionId}`);
-      }
-      if (direction) {
-        console.log(`   方向: ${direction}`);
-      }
       console.log(`   代币ID: ${tokenId || 'N/A'}`);
       console.log(`   数量: ${amount}`);
       console.log(`   当前价格: $${price.toFixed(4)}`);
-
-      // 如果 tokenId 不存在，打印调试信息并跳过
-      if (!tokenId) {
-        // 打印完整数据结构（仅第一个用于调试）
-        if (i === 0) {
-          console.log(`   ⚠️  调试信息（第一个持仓的完整数据）:`);
-          try {
-            const positionStr = JSON.stringify(position, null, 2);
-            console.log(`   ${positionStr.substring(0, 800)}${positionStr.length > 800 ? '...' : ''}`);
-          } catch (e) {
-            console.log(`   无法序列化持仓数据`);
-          }
-        }
-        
-        console.log(`   ⏭️  跳过：代币ID不存在，无法出售`);
-        console.log(`   提示：持仓数据中缺少 tokenId/positionId/collectionId 字段`);
-        console.log(`   建议：检查 SDK 版本或使用不同的获取持仓方法`);
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-        failCount++;
-        continue;
-      }
 
       // 检查最小价格
       if (minPrice > 0 && price < minPrice) {
@@ -263,3 +278,31 @@ main().catch((error) => {
   console.error('\n❌ 未处理的错误:', error);
   process.exit(1);
 });
+BATCH_SELL_EOF
+
+echo ""
+echo "✅ batch-sell.ts 文件已创建"
+echo ""
+
+# 验证文件
+if [ -f "src/batch-sell.ts" ]; then
+    echo "✅ 文件验证成功"
+    echo "   文件大小: $(wc -l < src/batch-sell.ts) 行"
+    echo "   文件路径: $(pwd)/src/batch-sell.ts"
+else
+    echo "❌ 错误：文件创建失败"
+    exit 1
+fi
+
+echo ""
+echo "=========================================="
+echo "✅ 完成！"
+echo "=========================================="
+echo ""
+echo "下一步："
+echo "1. 测试运行（模拟模式）："
+echo "   npx tsx src/batch-sell.ts"
+echo ""
+echo "2. 真实出售："
+echo "   npx tsx src/batch-sell.ts --real"
+echo ""

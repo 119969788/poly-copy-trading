@@ -1,0 +1,79 @@
+# ============================================
+# 快速上传套利策略到服务器
+# ============================================
+
+# ============================================
+# 方法 1：使用 PowerShell 脚本（推荐）
+# ============================================
+#
+# 1. 编辑 upload-to-server.ps1
+#    修改服务器IP：$SERVER_IP = "你的服务器IP"
+#
+# 2. 运行脚本
+.\upload-to-server.ps1
+#
+# ============================================
+
+# ============================================
+# 方法 2：使用 SCP 手动上传
+# ============================================
+#
+# 上传套利策略脚本
+scp src/arbitrage-strategy.ts root@你的服务器IP:/root/projects/poly-copy-trading/src/
+#
+# 上传 API 凭证生成脚本
+scp src/generate-api-clob.ts root@你的服务器IP:/root/projects/poly-copy-trading/src/
+scp src/generate-api-credentials.ts root@你的服务器IP:/root/projects/poly-copy-trading/src/
+#
+# 上传配置文件
+scp package.json root@你的服务器IP:/root/projects/poly-copy-trading/
+scp env.example.txt root@你的服务器IP:/root/projects/poly-copy-trading/
+#
+# ============================================
+
+# ============================================
+# 方法 3：使用 Git（如果已配置）
+# ============================================
+#
+# 在服务器上执行
+ssh root@你的服务器IP
+cd /root/projects/poly-copy-trading
+git pull origin main
+npm install
+#
+# ============================================
+
+# ============================================
+# 服务器端操作
+# ============================================
+#
+# 1. 安装新依赖
+cd /root/projects/poly-copy-trading
+npm install
+#
+# 2. 更新 .env 文件
+nano .env
+# 添加：
+# ARBITRAGE_BUY_PRICE=0.80
+# ARBITRAGE_SELL_PRICE=0.90
+# DRY_RUN=true
+#
+# 3. 测试运行
+npm run arbitrage
+#
+# 4. 生成 API 凭证（如果需要）
+npm run generate-api-clob
+#
+# ============================================
+
+# ============================================
+# 验证上传
+# ============================================
+#
+# 检查文件是否存在
+ssh root@你的服务器IP
+cd /root/projects/poly-copy-trading
+ls -la src/arbitrage-strategy.ts
+cat package.json | grep arbitrage
+#
+# ============================================

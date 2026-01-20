@@ -1,35 +1,15 @@
-import { PolymarketSDK, OnchainService } from '@catalyst-team/poly-sdk';
+import { PolySDK } from '@catalyst-team/poly-sdk';
 import dotenv from 'dotenv';
+import { writeFileSync, mkdirSync } from 'fs';
+import { join } from 'path';
 
 // 加载环境变量
 dotenv.config();
 
 // 获取配置
-let privateKey = process.env.POLYMARKET_PRIVATE_KEY;
+const privateKey = process.env.POLYMARKET_PRIVATE_KEY;
 if (!privateKey) {
   console.error('❌ 错误：请在 .env 文件中设置 POLYMARKET_PRIVATE_KEY');
-  process.exit(1);
-}
-
-// 清理私钥：去除空格、换行符，处理 0x 前缀
-privateKey = privateKey.trim().replace(/\s+/g, '');
-
-// 如果私钥以 0x 开头，去除它（SDK 会自动添加）
-if (privateKey.startsWith('0x') || privateKey.startsWith('0X')) {
-  privateKey = privateKey.slice(2);
-}
-
-// 验证私钥长度（应该是 64 个十六进制字符，即 32 字节）
-if (privateKey.length !== 64) {
-  console.error(`❌ 错误：私钥长度不正确。期望 64 个字符（32 字节），实际 ${privateKey.length} 个字符`);
-  console.error('   请检查 .env 文件中的 POLYMARKET_PRIVATE_KEY 是否正确');
-  process.exit(1);
-}
-
-// 验证私钥格式（只包含十六进制字符）
-if (!/^[0-9a-fA-F]+$/.test(privateKey)) {
-  console.error('❌ 错误：私钥格式不正确，应只包含十六进制字符（0-9, a-f, A-F）');
-  console.error('   请检查 .env 文件中的 POLYMARKET_PRIVATE_KEY 是否正确');
   process.exit(1);
 }
 
@@ -42,9 +22,19 @@ const targetAddresses = targetAddressesStr
 // 解析 dryRun 设置
 const dryRun = process.env.DRY_RUN !== 'false';
 
-// 解析是否跳过余额和授权检查
-const skipBalanceCheck = process.env.SKIP_BALANCE_CHECK === 'true';
-const skipApprovalCheck = process.env.SKIP_APPROVAL_CHECK === 'true';
+// 初始化 SDK
+const sdk = new PolySDK({ privateKey });
+
+// 交易记录
+interface TradeRecord {
+  timestamp: Date;
+  targetAddress: string;
+  marketId: string;
+  side: string;
+  amount: number;
+  price: string;
+  success: boolean;
+}
 
 // 统计信息
 interface TradingStats {
@@ -53,6 +43,15 @@ interface TradingStats {
   successfulTrades: number;
   failedTrades: number;
   startTime: Date;
+  trades: TradeRecord[];
+  // 按地址统计
+  byAddress: Map<string, { count: number; volume: number; success: number }>;
+  // 按市场统计
+  byMarket: Map<string, { count: number; volume: number; success: number }>;
+  // 按方向统计
+  bySide: Map<string, { count: number; volume: number; success: number }>;
+  // 交易金额统计
+  amounts: number[];
 }
 
 const stats: TradingStats = {
@@ -61,6 +60,11 @@ const stats: TradingStats = {
   successfulTrades: 0,
   failedTrades: 0,
   startTime: new Date(),
+  trades: [],
+  byAddress: new Map(),
+  byMarket: new Map(),
+  bySide: new Map(),
+  amounts: [],
 };
 
 // 打印横幅
@@ -74,23 +78,17 @@ function printBanner() {
 function printConfig() {
   console.log('📋 配置信息：');
   console.log(`   模式: ${dryRun ? '🔍 模拟模式 (Dry Run)' : '💰 实盘模式'}`);
-  console.log(`   跟随规模: 20% (sizeScale: 0.2)`);
-  console.log(`   最大单笔金额: $100 USDC`);
-  console.log(`   最大滑点: 5%`);
+  console.log(`   跟随规模: 10% (sizeScale: 0.1)`);
+  console.log(`   最大单笔金额: $10 USDC`);
+  console.log(`   最大滑点: 3%`);
   console.log(`   订单类型: FOK (Fill or Kill)`);
-  console.log(`   最小交易金额: $1 USDC`);
-  if (skipBalanceCheck) {
-    console.log(`   余额检查: ⏭️  已跳过`);
-  }
-  if (skipApprovalCheck) {
-    console.log(`   授权检查: ⏭️  已跳过`);
-  }
+  console.log(`   最小交易金额: $5 USDC（小于此金额不跟单）`);
   
   if (targetAddresses && targetAddresses.length > 0) {
     console.log(`   指定地址数量: ${targetAddresses.length}`);
     console.log(`   目标地址: ${targetAddresses.slice(0, 3).join(', ')}${targetAddresses.length > 3 ? '...' : ''}`);
   } else {
-    console.log(`   跟随排行榜: 前 1 名`);
+    console.log(`   跟随排行榜: 前 50 名`);
   }
   console.log('');
 }
@@ -101,17 +99,169 @@ function printStats() {
   const hours = Math.floor(runtime / 3600);
   const minutes = Math.floor((runtime % 3600) / 60);
   const seconds = runtime % 60;
+  const runtimeHours = runtime / 3600;
   
-  console.log('\n📊 统计信息：');
+  console.log('\n' + '═'.repeat(60));
+  console.log('📊 模拟跟单统计信息');
+  console.log('═'.repeat(60));
+  
+  // 基础统计
+  console.log('\n【基础统计】');
   console.log(`   运行时间: ${hours}h ${minutes}m ${seconds}s`);
   console.log(`   总交易数: ${stats.totalTrades}`);
   console.log(`   成功交易: ${stats.successfulTrades}`);
   console.log(`   失败交易: ${stats.failedTrades}`);
   console.log(`   总交易量: $${stats.totalVolume.toFixed(2)} USDC`);
+  
   if (stats.totalTrades > 0) {
-    console.log(`   成功率: ${((stats.successfulTrades / stats.totalTrades) * 100).toFixed(2)}%`);
+    const successRate = (stats.successfulTrades / stats.totalTrades) * 100;
+    const avgAmount = stats.totalVolume / stats.successfulTrades;
+    const tradesPerHour = stats.totalTrades / Math.max(runtimeHours, 0.01);
+    
+    console.log(`   成功率: ${successRate.toFixed(2)}%`);
+    console.log(`   平均交易金额: $${avgAmount.toFixed(2)} USDC`);
+    console.log(`   交易速率: ${tradesPerHour.toFixed(2)} 笔/小时`);
+    
+    // 交易金额统计
+    if (stats.amounts.length > 0) {
+      const sortedAmounts = [...stats.amounts].sort((a, b) => a - b);
+      const minAmount = sortedAmounts[0];
+      const maxAmount = sortedAmounts[sortedAmounts.length - 1];
+      const medianAmount = sortedAmounts[Math.floor(sortedAmounts.length / 2)];
+      console.log(`   最小交易: $${minAmount.toFixed(2)} USDC`);
+      console.log(`   最大交易: $${maxAmount.toFixed(2)} USDC`);
+      console.log(`   中位交易: $${medianAmount.toFixed(2)} USDC`);
+    }
   }
-  console.log('');
+  
+  // 按地址统计（Top 5）
+  if (stats.byAddress.size > 0) {
+    console.log('\n【按跟随地址统计 (Top 5)】');
+    const addressStats = Array.from(stats.byAddress.entries())
+      .map(([addr, data]) => ({
+        address: addr.substring(0, 10) + '...' + addr.substring(addr.length - 8),
+        ...data,
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+    
+    addressStats.forEach((item, index) => {
+      const successRate = item.count > 0 ? (item.success / item.count * 100).toFixed(1) : '0.0';
+      console.log(`   ${index + 1}. ${item.address}`);
+      console.log(`      交易数: ${item.count} | 交易量: $${item.volume.toFixed(2)} | 成功率: ${successRate}%`);
+    });
+  }
+  
+  // 按市场统计（Top 5）
+  if (stats.byMarket.size > 0) {
+    console.log('\n【按市场统计 (Top 5)】');
+    const marketStats = Array.from(stats.byMarket.entries())
+      .map(([market, data]) => ({
+        market: market.length > 40 ? market.substring(0, 37) + '...' : market,
+        ...data,
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+    
+    marketStats.forEach((item, index) => {
+      const successRate = item.count > 0 ? (item.success / item.count * 100).toFixed(1) : '0.0';
+      console.log(`   ${index + 1}. ${item.market}`);
+      console.log(`      交易数: ${item.count} | 交易量: $${item.volume.toFixed(2)} | 成功率: ${successRate}%`);
+    });
+  }
+  
+  // 按方向统计
+  if (stats.bySide.size > 0) {
+    console.log('\n【按方向统计】');
+    const sideStats = Array.from(stats.bySide.entries())
+      .sort((a, b) => b[1].count - a[1].count);
+    
+    sideStats.forEach(([side, data]) => {
+      const successRate = data.count > 0 ? (data.success / data.count * 100).toFixed(1) : '0.0';
+      const percentage = stats.totalTrades > 0 ? (data.count / stats.totalTrades * 100).toFixed(1) : '0.0';
+      console.log(`   ${side}: ${data.count} 笔 (${percentage}%) | 交易量: $${data.volume.toFixed(2)} | 成功率: ${successRate}%`);
+    });
+  }
+  
+  console.log('\n' + '═'.repeat(60) + '\n');
+}
+
+// 保存统计信息到文件
+function saveStatsToFile() {
+  try {
+    const statsDir = join(process.cwd(), 'stats');
+    mkdirSync(statsDir, { recursive: true });
+    
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `stats-${timestamp}.json`;
+    const filepath = join(statsDir, filename);
+    
+    // 准备要保存的数据
+    const dataToSave = {
+      summary: {
+        totalTrades: stats.totalTrades,
+        successfulTrades: stats.successfulTrades,
+        failedTrades: stats.failedTrades,
+        totalVolume: stats.totalVolume,
+        successRate: stats.totalTrades > 0 
+          ? ((stats.successfulTrades / stats.totalTrades) * 100).toFixed(2) + '%'
+          : '0%',
+        startTime: stats.startTime.toISOString(),
+        endTime: new Date().toISOString(),
+        runtime: Math.floor((Date.now() - stats.startTime.getTime()) / 1000),
+      },
+      byAddress: Object.fromEntries(
+        Array.from(stats.byAddress.entries()).map(([addr, data]) => [
+          addr,
+          {
+            ...data,
+            successRate: data.count > 0 ? ((data.success / data.count) * 100).toFixed(2) + '%' : '0%',
+          }
+        ])
+      ),
+      byMarket: Object.fromEntries(
+        Array.from(stats.byMarket.entries()).map(([market, data]) => [
+          market,
+          {
+            ...data,
+            successRate: data.count > 0 ? ((data.success / data.count) * 100).toFixed(2) + '%' : '0%',
+          }
+        ])
+      ),
+      bySide: Object.fromEntries(
+        Array.from(stats.bySide.entries()).map(([side, data]) => [
+          side,
+          {
+            ...data,
+            successRate: data.count > 0 ? ((data.success / data.count) * 100).toFixed(2) + '%' : '0%',
+          }
+        ])
+      ),
+      amounts: {
+        count: stats.amounts.length,
+        total: stats.amounts.reduce((sum, amt) => sum + amt, 0),
+        average: stats.amounts.length > 0 
+          ? (stats.amounts.reduce((sum, amt) => sum + amt, 0) / stats.amounts.length).toFixed(2)
+          : '0',
+        min: stats.amounts.length > 0 ? Math.min(...stats.amounts).toFixed(2) : '0',
+        max: stats.amounts.length > 0 ? Math.max(...stats.amounts).toFixed(2) : '0',
+        median: stats.amounts.length > 0 
+          ? [...stats.amounts].sort((a, b) => a - b)[Math.floor(stats.amounts.length / 2)].toFixed(2)
+          : '0',
+      },
+      trades: stats.trades.map(t => ({
+        ...t,
+        timestamp: t.timestamp.toISOString(),
+      })),
+    };
+    
+    writeFileSync(filepath, JSON.stringify(dataToSave, null, 2), 'utf-8');
+    console.log(`\n💾 统计数据已保存到: ${filepath}\n`);
+    return filepath;
+  } catch (error: any) {
+    console.error('⚠️  保存统计文件失败:', error?.message || error);
+    return null;
+  }
 }
 
 // 主函数
@@ -119,249 +269,182 @@ async function main() {
   printBanner();
   printConfig();
 
-  let sdk: PolymarketSDK | null = null;
-  let autoCopyTrading: any = null;
-
   try {
-    // 初始化 SDK（推荐使用 create 方法，会自动初始化）
-    console.log('🚀 正在初始化 SDK...');
-    sdk = await PolymarketSDK.create({ privateKey });
-    console.log('✅ SDK 初始化成功\n');
-
-    // 创建 OnchainService 用于授权和余额检查
-    // privateKey 已在前面检查，这里可以安全使用
-    const onchainService = new OnchainService({
-      privateKey: privateKey as string,
-    });
-
-    // 检查余额（可选）
-    if (!skipBalanceCheck) {
-      console.log('💰 检查钱包余额...');
-      try {
-        const balances = await onchainService.getTokenBalances();
-        const usdcBalance = parseFloat(balances.usdcE || '0');
-        const maticBalance = parseFloat(balances.matic || '0');
-        
-        console.log(`   USDC.e 余额: ${usdcBalance.toFixed(2)} USDC`);
-        console.log(`   MATIC 余额: ${maticBalance.toFixed(4)} MATIC`);
-        
-        if (usdcBalance < 10) {
-          console.warn('⚠️  警告: USDC.e 余额不足，建议至少 $10 USDC');
-          console.warn('   当前余额可能不足以执行交易');
-        } else if (usdcBalance < 50) {
-          console.warn('⚠️  提示: USDC.e 余额较低，建议保持至少 $50-100 USDC');
-        } else {
-          console.log('✅ USDC.e 余额充足');
-        }
-        
-        if (maticBalance < 0.01) {
-          console.error('❌ 错误: MATIC 余额不足，无法支付 Gas 费');
-          console.error('   请向钱包充值 MATIC（建议至少 0.1 MATIC）');
-        } else if (maticBalance < 0.1) {
-          console.warn('⚠️  警告: MATIC 余额较低，建议至少 0.1 MATIC');
-        } else {
-          console.log('✅ MATIC 余额充足');
-        }
-      } catch (error: any) {
-        console.error('⚠️  余额检查失败:', error?.message || error);
-        console.error('   请手动检查钱包余额');
-      }
-      console.log('');
-    } else {
-      console.log('💰 跳过余额检查（已设置 SKIP_BALANCE_CHECK=true）\n');
-      console.log('⚠️  警告：如果出现 "not enough balance" 错误，请检查钱包余额\n');
-    }
-
-    // 检查并授权 USDC.e（可选）
-    if (!skipApprovalCheck) {
-      console.log('🔐 正在检查并授权 USDC.e...');
-      let authorizationSuccess = false;
-      let retryCount = 0;
-      const maxRetries = 3;
+    // 检查钱包余额和授权状态
+    console.log('🔍 正在检查钱包状态...');
+    try {
+      // 获取钱包地址
+      const walletAddress = sdk.getAddress();
+      console.log(`   钱包地址: ${walletAddress}`);
       
-      while (!authorizationSuccess && retryCount < maxRetries) {
+      // 检查 USDC.e 余额（如果 SDK 支持）
+      if (typeof sdk.smartMoney.getBalance === 'function') {
         try {
-          // 检查授权状态（使用较大的金额以确保授权足够）
-          const status = await onchainService.checkReadyForCTF('10000');
+          const balance = await sdk.smartMoney.getBalance();
+          console.log(`   USDC.e 余额: $${balance || 'N/A'}`);
           
-          if (!status.ready) {
-            console.log(`⚠️  需要授权（尝试 ${retryCount + 1}/${maxRetries}）`);
-            if (status.issues && status.issues.length > 0) {
-              console.log(`   问题: ${status.issues.join(', ')}`);
-            }
-            
-            console.log('正在授权 USDC.e...');
-            const result = await onchainService.approveAll();
-            
-            console.log('✅ 授权交易已提交');
-            const totalApprovals = (result.erc20Approvals?.length || 0) + (result.erc1155Approvals?.length || 0);
-            if (totalApprovals > 0) {
-              console.log(`   已授权 ${totalApprovals} 个代币`);
-            }
-            if (result.summary) {
-              console.log(`   摘要: ${result.summary}`);
-            }
-            
-            // 如果摘要显示授权已完成，直接认为成功
-            if (result.summary && result.summary.includes('already set') || result.summary.includes('Ready to trade')) {
-              authorizationSuccess = true;
-              console.log('✅ USDC.e 授权已完成（根据授权摘要确认）\n');
-            } else {
-              // 等待交易确认（增加等待时间）
-              console.log('   等待交易确认（约 10-15 秒）...');
-              await new Promise(resolve => setTimeout(resolve, 12000));
-              
-              // 再次检查授权状态，使用较小的金额验证（只检查授权，不检查余额）
-              console.log('   验证授权状态...');
-              try {
-                // 先获取当前余额，使用余额金额来验证授权（避免余额不足导致验证失败）
-                const balances = await onchainService.getTokenBalances();
-                const usdcBalance = parseFloat(balances.usdcE || '0');
-                // 使用当前余额或最小值 1 USDC 来验证授权
-                const verifyAmount = Math.max(usdcBalance, 1).toString();
-                
-                const verifyStatus = await onchainService.checkReadyForCTF(verifyAmount);
-                // 检查是否只是因为余额不足，而不是授权问题
-                const isBalanceIssue = verifyStatus.issues?.some((issue: string) => 
-                  issue.includes('Insufficient USDC') || issue.includes('balance')
-                );
-                const isApprovalIssue = verifyStatus.issues?.some((issue: string) => 
-                  issue.includes('allowance') || issue.includes('approval')
-                );
-                
-                if (verifyStatus.ready) {
-                  authorizationSuccess = true;
-                  console.log('✅ USDC.e 授权验证成功\n');
-                } else if (isBalanceIssue && !isApprovalIssue) {
-                  // 只是余额不足，但授权已成功
-                  authorizationSuccess = true;
-                  console.log('✅ USDC.e 授权验证成功（余额不足不影响授权状态）\n');
-                } else {
-                  retryCount++;
-                  if (retryCount < maxRetries) {
-                    console.log(`⚠️  授权验证失败，将在 ${5 * retryCount} 秒后重试...\n`);
-                    await new Promise(resolve => setTimeout(resolve, 5000 * retryCount));
-                  } else {
-                    console.error('❌ 授权验证失败，已达到最大重试次数');
-                    console.error('   请检查：');
-                    console.error('   1. 钱包余额是否足够（需要 USDC.e 和 MATIC）');
-                    console.error('   2. 网络连接是否正常');
-                    console.error('   3. 可以在 Polymarket 网站上手动授权 USDC.e');
-                    console.error('   4. 如果已授权，可以设置 SKIP_APPROVAL_CHECK=true 跳过检查\n');
-                  }
-                }
-              } catch (verifyError: any) {
-                // 验证时出错，但如果授权摘要显示成功，仍然认为授权成功
-                if (result.summary && (result.summary.includes('already set') || result.summary.includes('Ready'))) {
-                  authorizationSuccess = true;
-                  console.log('✅ USDC.e 授权已完成（根据授权摘要确认，验证时网络可能延迟）\n');
-                } else {
-                  retryCount++;
-                  if (retryCount < maxRetries) {
-                    console.log(`⚠️  授权验证出错，将在 ${5 * retryCount} 秒后重试...\n`);
-                    await new Promise(resolve => setTimeout(resolve, 5000 * retryCount));
-                  } else {
-                    console.error('❌ 授权验证失败，已达到最大重试次数');
-                    console.error('   如果授权摘要显示"already set"或"Ready to trade"，说明授权已成功');
-                    console.error('   可以设置 SKIP_APPROVAL_CHECK=true 跳过检查\n');
-                  }
-                }
-              }
-            }
-          } else {
-            authorizationSuccess = true;
-            console.log('✅ USDC.e 已授权\n');
+          if (balance && parseFloat(balance) < 5) {
+            console.warn('   ⚠️  警告：余额可能不足，建议至少保留 $10 USDC.e');
           }
-        } catch (error: any) {
-          retryCount++;
-          const errorMsg = error?.message || String(error);
-          console.error(`⚠️  授权失败（尝试 ${retryCount}/${maxRetries}）:`, errorMsg);
-          
-          if (errorMsg.includes('user rejected') || errorMsg.includes('denied')) {
-            console.error('❌ 授权被拒绝，请手动授权或重试');
-            console.error('   可以在 Polymarket 网站上手动授权 USDC.e\n');
-            break; // 用户拒绝，不再重试
-          } else if (retryCount < maxRetries) {
-            console.log(`   将在 ${5 * retryCount} 秒后重试...\n`);
-            await new Promise(resolve => setTimeout(resolve, 5000 * retryCount));
-          } else {
-            console.error('❌ 授权失败，已达到最大重试次数');
-            console.error('   如果已经授权过，可以设置 SKIP_APPROVAL_CHECK=true 跳过检查\n');
-          }
+        } catch (e) {
+          // 如果获取余额失败，继续执行
+          console.log('   ⚠️  无法获取余额信息（某些 SDK 版本不支持）');
         }
       }
       
-      if (!authorizationSuccess && !skipApprovalCheck) {
-        console.error('⚠️  警告：授权未成功，交易可能会失败');
-        console.error('   建议：');
-        console.error('   1. 检查钱包余额（USDC.e 和 MATIC）');
-        console.error('   2. 手动在 Polymarket 网站上授权 USDC.e');
-        console.error('   3. 或设置 SKIP_APPROVAL_CHECK=true 跳过检查（不推荐）\n');
+      // 授权 USDC.e
+      console.log('🔐 正在授权 USDC.e...');
+      try {
+        await sdk.smartMoney.approveAll();
+        console.log('✅ USDC.e 授权成功\n');
+      } catch (error: any) {
+        const errorMsg = error?.message || error?.toString() || '未知错误';
+        console.error('⚠️  授权失败:', errorMsg);
+        
+        // 检查是否是余额不足的错误
+        if (errorMsg.includes('balance') || errorMsg.includes('allowance') || errorMsg.includes('insufficient')) {
+          console.error('\n❌ 错误：余额或授权不足！');
+          console.error('   请检查：');
+          console.error('   1. 钱包中是否有足够的 USDC.e（建议至少 $10）');
+          console.error('   2. 网络是否连接正常');
+          console.error('   3. 私钥是否正确');
+          console.error('\n   如果是首次运行，请确保：');
+          console.error('   - 钱包地址: 0x4599C8C95853A01c3E6d1DEe6cC2da1716c0cBA0');
+          console.error('   - 钱包中有足够的 USDC.e 用于交易\n');
+        } else {
+          console.log('   如果已经授权过，可以忽略此错误\n');
+        }
       }
-    } else {
-      console.log('🔐 跳过授权检查（已设置 SKIP_APPROVAL_CHECK=true）\n');
-      console.log('⚠️  警告：如果出现 "not enough balance / allowance" 错误，请检查授权状态\n');
+    } catch (error: any) {
+      console.error('⚠️  检查钱包状态失败:', error?.message || error);
+      console.log('   继续尝试启动...\n');
     }
 
     // 准备跟单选项
     const copyTradingOptions = {
-      sizeScale: 0.2,          // 跟随 20% 规模
-      maxSizePerTrade: 100,    // 最大单笔 $100
-      maxSlippage: 0.05,       // 最大滑点 5%
+      sizeScale: 0.1,          // 跟随 10% 规模
+      maxSizePerTrade: 10,     // 最大单笔 $10
+      maxSlippage: 0.03,       // 最大滑点 3%
       orderType: 'FOK' as const, // Fill or Kill
-      minTradeSize: 1,         // 最小交易 $1
+      minTradeSize: 5,         // 最小交易 $5（小于此金额不跟单）
       dryRun,                  // 模拟模式
       ...(targetAddresses && targetAddresses.length > 0 
         ? { targetAddresses } 
-        : { topN: 1 }),       // 如果没有指定地址，则跟随前 1 名
-      
-      // 回调函数
-      onTrade: (trade: any, result: any) => {
-        stats.totalTrades++;
-        
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log(`📈 跟单交易 #${stats.totalTrades}`);
-        console.log(`   时间: ${new Date().toLocaleString('zh-CN')}`);
-        console.log(`   跟随地址: ${trade.traderAddress || trade.address || 'N/A'}`);
-        console.log(`   交易者: ${trade.traderName || 'N/A'}`);
-        console.log(`   市场: ${trade.conditionId || trade.marketId || 'N/A'}`);
-        console.log(`   方向: ${trade.side || 'N/A'}`);
-        console.log(`   结果: ${trade.outcome || 'N/A'}`);
-        console.log(`   金额: $${trade.size || trade.amount || 0}`);
-        console.log(`   价格: ${trade.price || 'N/A'}`);
-        
-        if (result?.success || result === true) {
-          stats.successfulTrades++;
-          const tradeSize = parseFloat(trade.size || trade.amount || '0');
-          if (!isNaN(tradeSize)) {
-            stats.totalVolume += tradeSize;
-          }
-          console.log(`   状态: ✅ 成功`);
-        } else {
-          stats.failedTrades++;
-          console.log(`   状态: ❌ 失败`);
-          if (result?.error || result?.message) {
-            console.log(`   错误: ${result.error || result.message}`);
-          }
-        }
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-
-        // 每 10 笔交易打印一次统计
-        if (stats.totalTrades % 10 === 0) {
-          printStats();
-        }
-      },
-      onError: (error: any) => {
-        console.error('❌ 跟单错误:', error?.message || error);
-      },
+        : { topN: 50 }),       // 如果没有指定地址，则跟随前 50 名
     };
 
-    console.log('🚀 正在启动自动跟单系统...\n');
+    console.log('🚀 正在启动自动跟单系统...');
+    console.log(`📦 跟单参数: minTradeSize=${copyTradingOptions.minTradeSize}, maxSizePerTrade=${copyTradingOptions.maxSizePerTrade}\n`);
 
-    // 启动自动跟单（回调函数已在 copyTradingOptions 中定义）
-    autoCopyTrading = await sdk.smartMoney.startAutoCopyTrading(copyTradingOptions);
-    
-    console.log(`✅ 已开始跟踪 ${autoCopyTrading.targetAddresses?.length || 0} 个钱包地址\n`);
+    // 启动自动跟单
+    const autoCopyTrading = await sdk.smartMoney.startAutoCopyTrading(copyTradingOptions);
+
+    // 处理交易记录的函数
+    const handleTrade = (trade: any) => {
+      stats.totalTrades++;
+      const timestamp = new Date();
+      const targetAddr = trade.targetAddress || trade.address || 'unknown';
+      const marketId = trade.marketId || trade.market || 'unknown';
+      const side = trade.side || trade.position || 'unknown';
+      const amount = parseFloat(trade.size || trade.amount || '0');
+      const isSuccess = trade.status === 'success' || trade.success || false;
+      
+      // 记录交易
+      const record: TradeRecord = {
+        timestamp,
+        targetAddress: targetAddr,
+        marketId,
+        side,
+        amount: isSuccess ? amount : 0,
+        price: trade.price || 'N/A',
+        success: isSuccess,
+      };
+      stats.trades.push(record);
+      
+      // 更新成功/失败计数
+      if (isSuccess) {
+        stats.successfulTrades++;
+        stats.totalVolume += amount;
+        stats.amounts.push(amount);
+      } else {
+        stats.failedTrades++;
+      }
+      
+      // 按地址统计
+      if (!stats.byAddress.has(targetAddr)) {
+        stats.byAddress.set(targetAddr, { count: 0, volume: 0, success: 0 });
+      }
+      const addrData = stats.byAddress.get(targetAddr)!;
+      addrData.count++;
+      if (isSuccess) {
+        addrData.volume += amount;
+        addrData.success++;
+      }
+      
+      // 按市场统计
+      if (!stats.byMarket.has(marketId)) {
+        stats.byMarket.set(marketId, { count: 0, volume: 0, success: 0 });
+      }
+      const marketData = stats.byMarket.get(marketId)!;
+      marketData.count++;
+      if (isSuccess) {
+        marketData.volume += amount;
+        marketData.success++;
+      }
+      
+      // 按方向统计
+      if (!stats.bySide.has(side)) {
+        stats.bySide.set(side, { count: 0, volume: 0, success: 0 });
+      }
+      const sideData = stats.bySide.get(side)!;
+      sideData.count++;
+      if (isSuccess) {
+        sideData.volume += amount;
+        sideData.success++;
+      }
+      
+      // 打印交易详情
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log(`📈 跟单交易 #${stats.totalTrades}`);
+      console.log(`   时间: ${timestamp.toLocaleString('zh-CN')}`);
+      console.log(`   跟随地址: ${targetAddr.substring(0, 10)}...${targetAddr.substring(targetAddr.length - 8)}`);
+      console.log(`   市场: ${marketId.length > 50 ? marketId.substring(0, 47) + '...' : marketId}`);
+      console.log(`   方向: ${side}`);
+      console.log(`   金额: $${amount.toFixed(2)} USDC`);
+      console.log(`   价格: ${record.price}`);
+      console.log(`   状态: ${isSuccess ? '✅ 成功' : '❌ 失败'}`);
+      if (!isSuccess) {
+        const errorMsg = trade.error || trade.message || trade.data?.error || '未知错误';
+        const errorStr = typeof errorMsg === 'string' ? errorMsg : JSON.stringify(errorMsg);
+        console.log(`   错误: ${errorStr}`);
+        
+        // 针对余额/授权不足的错误给出详细提示
+        if (errorStr.includes('not enough balance') || 
+            errorStr.includes('not enough allowance') ||
+            errorStr.includes('insufficient') ||
+            errorStr.includes('balance / allowance')) {
+          console.log('\n   ⚠️  余额或授权不足！解决方案：');
+          console.log('   1. 检查钱包 USDC.e 余额（建议至少保留 $10）');
+          console.log('   2. 重新授权 USDC.e：停止程序后重新启动');
+          console.log('   3. 确认钱包地址: 0x4599C8C95853A01c3E6d1DEe6cC2da1716c0cBA0');
+          console.log('   4. 如果余额充足，可能需要重新授权合约');
+        }
+      }
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+
+      // 每 10 笔交易打印一次详细统计
+      if (stats.totalTrades % 10 === 0) {
+        printStats();
+      }
+    };
+
+    // 监听交易事件（使用 onTrade 回调）
+    if (typeof autoCopyTrading.onTrade === 'function') {
+      autoCopyTrading.onTrade(handleTrade);
+    } else if (typeof autoCopyTrading.on === 'function') {
+      // 兼容事件监听器模式
+      autoCopyTrading.on('trade', handleTrade);
+    }
 
     // 定期打印统计（每 5 分钟）
     const statsInterval = setInterval(() => {
@@ -371,14 +454,20 @@ async function main() {
     // 定期获取和打印统计信息（使用 getStats 方法）
     const statsFetchInterval = setInterval(async () => {
       try {
-        if (autoCopyTrading && typeof autoCopyTrading.getStats === 'function') {
-          const currentStats = autoCopyTrading.getStats();
-          if (currentStats) {
-            console.log('\n📊 SDK 统计信息：');
-            console.log(JSON.stringify(currentStats, null, 2));
-            console.log('');
-          }
+        let currentStats: any = null;
+        
+        // 尝试使用 getStats 方法
+        if (typeof autoCopyTrading.getStats === 'function') {
+          currentStats = await autoCopyTrading.getStats();
         }
+        
+        // 如果有统计信息，打印它
+        if (currentStats) {
+          console.log('\n📊 SDK 统计信息：');
+          console.log(JSON.stringify(currentStats, null, 2));
+          console.log('');
+        }
+        
         // 同时打印本地统计
         printStats();
       } catch (error: any) {
@@ -400,18 +489,21 @@ async function main() {
 
       try {
         // 停止自动跟单
-        if (autoCopyTrading && typeof autoCopyTrading.stop === 'function') {
-          autoCopyTrading.stop();
-        }
-        
-        // 停止 SDK
-        if (sdk) {
-          sdk.stop();
+        if (typeof autoCopyTrading.stop === 'function') {
+          await autoCopyTrading.stop();
+        } else if (typeof autoCopyTrading.destroy === 'function') {
+          await autoCopyTrading.destroy();
         }
 
         // 打印最终统计
         console.log('\n');
         printStats();
+        
+        // 保存统计到文件
+        if (stats.totalTrades > 0) {
+          saveStatsToFile();
+        }
+        
         console.log('✅ 已安全停止自动跟单系统\n');
         
         process.exit(0);
@@ -434,15 +526,6 @@ async function main() {
     if (error?.stack) {
       console.error('\n堆栈跟踪:', error.stack);
     }
-    
-    // 清理资源
-    if (autoCopyTrading && typeof autoCopyTrading.stop === 'function') {
-      autoCopyTrading.stop();
-    }
-    if (sdk) {
-      sdk.stop();
-    }
-    
     process.exit(1);
   }
 }

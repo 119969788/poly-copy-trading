@@ -10,16 +10,17 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "batch-sell": "tsx src/batch-sell.ts",
-    "dip-arb": "tsx src/dip-arb-15m.ts",
-    "redeem": "tsx src/redeem-settled.ts",
-    "redeem-tokens": "tsx src/redeem-tokens.ts",
-    "redeem-tokens-safe": "tsx src/redeem-tokens-safe.ts",
-    "approve": "tsx src/approve-contract.ts",
-    "modify-params": "tsx src/modify-params.ts",
-    "transfer-tokens": "tsx src/transfer-tokens.ts",
-    "query-balances": "tsx src/query-balances.ts",
-    "redeem-or-sell": "tsx src/redeem-or-sell.ts",
-    "redeem-official": "tsx src/redeem-official.ts"
+    "batch-sell-real": "tsx src/batch-sell.ts --real",
+    "generate-api": "tsx src/generate-api-credentials.ts",
+    "generate-api-clob": "tsx src/generate-api-clob.ts",
+    "arbitrage": "tsx src/arbitrage-strategy.ts",
+    "arbitrage-15m": "tsx src/arbitrage-15m.ts",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop poly-copy-trading",
+    "pm2:restart": "pm2 restart poly-copy-trading",
+    "pm2:delete": "pm2 delete poly-copy-trading",
+    "pm2:logs": "pm2 logs poly-copy-trading",
+    "pm2:status": "pm2 status"
   },
   "keywords": [
     "polymarket",
@@ -30,12 +31,10 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@catalyst-team/poly-sdk": "latest",
-    "@safe-global/protocol-kit": "^3.0.0",
-    "@safe-global/safe-core-sdk-types": "^4.0.0",
-    "axios": "^1.6.0",
+    "@catalyst-team/poly-sdk": "^0.4.5",
+    "@polymarket/clob-client": "^5.2.1",
     "dotenv": "^16.4.5",
-    "ethers": "^6.9.0"
+    "ethers": "^5.8.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.5",
