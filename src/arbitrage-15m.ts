@@ -581,13 +581,18 @@ async function main() {
     // 查找15分钟市场（优先使用 DipArbService，因为它专门用于15分钟市场）
     console.log(`🔍 正在查找 ${MARKET_COIN} 15分钟市场...`);
     
-    // 先确保 DipArb 服务没有在运行
+    // 先确保 DipArb 服务没有在运行（避免 "already running" 错误）
     if (sdk.dipArb && typeof sdk.dipArb.stop === 'function') {
       try {
         await sdk.dipArb.stop();
-        console.log(`   🔄 确保 DipArb 服务已停止`);
+        // 等待一小段时间确保服务完全停止
+        await new Promise(resolve => setTimeout(resolve, 500));
+        console.log(`   🔄 已确保 DipArb 服务已停止`);
       } catch (e: any) {
         // 如果停止失败（可能没有运行），继续
+        if (!e?.message?.includes('not running')) {
+          console.log(`   ⚠️  停止 DipArb 服务时出错: ${e?.message || e}`);
+        }
       }
     }
     
