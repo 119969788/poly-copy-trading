@@ -430,43 +430,109 @@ async function getCurrentPrice(tokenId: string): Promise<number | null> {
   }
 
   try {
-    // 方法1: 使用实时服务获取价格
+    // 方法1: 使用实时服务获取价格（WebSocket，最可靠）
     if (sdk.realtime) {
-      const price = sdk.realtime.getPrice(tokenId);
-      if (price !== null && price !== undefined) {
-        return parseFloat(price.toString());
-      }
-    }
-
-    // 方法2: 使用订单簿获取最佳买价（作为当前价格）
-    if (sdk.tradingService) {
       try {
-        const orderbook = await sdk.getOrderbook(currentMarket?.conditionId || '');
-        if (orderbook && orderbook.bids && orderbook.bids.length > 0) {
-          // 使用最佳买价作为当前价格
-          const bestBid = orderbook.bids[0];
-          if (bestBid && bestBid.price !== undefined) {
-            return parseFloat(bestBid.price.toString());
+        const price = sdk.realtime.getPrice(tokenId);
+        if (price !== null && price !== undefined) {
+          const priceNum = parseFloat(price.toString());
+          if (!isNaN(priceNum) && priceNum > 0) {
+            return priceNum;
           }
         }
-      } catch (e) {
+      } catch (e: any) {
         // 继续尝试其他方法
       }
     }
 
-    // 方法3: 从市场数据获取
-    if (currentMarket) {
-      const token = currentMarket.tokens?.find((t: any) => 
+    // 方法2: 从市场数据获取（如果市场对象中有价格）
+    if (currentMarket && currentMarket.tokens) {
+      const token = currentMarket.tokens.find((t: any) => 
         t.tokenId === tokenId || t.id === tokenId
       );
       if (token && token.price !== undefined) {
-        return parseFloat(token.price.toString());
+        const priceNum = parseFloat(token.price.toString());
+        if (!isNaN(priceNum) && priceNum > 0) {
+          return priceNum;
+        }
+      }
+    }
+
+    // 方法3: 使用订单簿获取（如果订单簿存在）
+    // 注意：如果市场已关闭，订单簿可能不存在，所以放在最后
+    if (sdk.tradingService && currentMarket?.conditionId) {
+      try {
+        // 尝试通过 conditionId 获取订单簿
+        const orderbook = await sdk.getOrderbook(currentMarket.conditionId);
+        if (orderbook) {
+          // 尝试从订单簿中找到对应 token 的价格
+          if (orderbook.bids && orderbook.bids.length > 0) {
+            const bestBid = orderbook.bids[0];
+            if (bestBid && bestBid.price !== undefined) {
+              const priceNum = parseFloat(bestBid.price.toString());
+              if (!isNaN(priceNum) && priceNum > 0) {
+                return priceNum;
+              }
+            }
+          }
+          // 或者从订单簿的 tokens 中查找
+          if (orderbook.tokens) {
+            const token = orderbook.tokens.find((t: any) => 
+              t.tokenId === tokenId || t.id === tokenId
+            );
+            if (token && token.price !== undefined) {
+              const priceNum = parseFloat(token.price.toString());
+              if (!isNaN(priceNum) && priceNum > 0) {
+                return priceNum;
+              }
+            }
+          }
+        }
+      } catch (e: any) {
+        // 订单簿不存在或获取失败，这是正常的（市场可能已关闭）
+        // 不输出错误，静默失败
+        if (!e?.message?.includes('No orderbook') && !e?.message?.includes('404')) {
+          // 只有非404错误才记录
+        }
+      }
+    }
+
+    // 方法4: 尝试通过 Gamma API 获取最新价格
+    if (currentMarket?.slug) {
+      try {
+        const marketUrl = `https://gamma-api.polymarket.com/markets?slug=${currentMarket.slug}`;
+        const response = await fetch(marketUrl);
+        if (response.ok) {
+          const marketData = await response.json();
+          const market = Array.isArray(marketData) ? marketData[0] : marketData;
+          if (market && market.outcomes) {
+            const normalizedOutcomes = normalizeOutcomes(market.outcomes);
+            const outcome = normalizedOutcomes.find((o: any) => {
+              // 尝试匹配 tokenId
+              if (o.tokenId === tokenId) return true;
+              // 或者通过索引匹配（第一个是 YES/UP，第二个是 NO/DOWN）
+              const index = currentMarket.clobTokenIds?.indexOf(tokenId);
+              if (index !== undefined && index >= 0 && index < normalizedOutcomes.length) {
+                return normalizedOutcomes[index] === o;
+              }
+              return false;
+            });
+            if (outcome && outcome.price !== undefined) {
+              const priceNum = parseFloat(outcome.price.toString());
+              if (!isNaN(priceNum) && priceNum > 0) {
+                return priceNum;
+              }
+            }
+          }
+        }
+      } catch (e: any) {
+        // 静默失败
       }
     }
 
     return null;
   } catch (error: any) {
-    console.error(`   ❌ 获取价格失败:`, error?.message || error);
+    // 不输出详细错误，避免日志过多
     return null;
   }
 }
@@ -710,8 +776,28 @@ async function mainLoop() {
     const yesPrice = await getCurrentPrice(yesTokenId);
     const noPrice = await getCurrentPrice(noTokenId);
 
-    if (yesPrice === null || noPrice === null) {
-      console.warn(`   ⚠️  无法获取价格，跳过本次检查`);
+    // 如果无法获取价格，尝试使用默认值或跳过
+    if (yesPrice === null && noPrice === null) {
+      console.warn(`   ⚠️  无法获取价格（市场可能已关闭或订单簿不存在）`);
+      console.warn(`   提示：如果市场已结束，请更新 ARBITRAGE_EVENT_SLUG 为新的市场`);
+      return;
+    }
+    
+    // 如果只有一个价格获取失败，使用另一个价格推算（YES + NO = 1）
+    let finalYesPrice = yesPrice;
+    let finalNoPrice = noPrice;
+    
+    if (yesPrice === null && noPrice !== null) {
+      finalYesPrice = Math.max(0, Math.min(1, 1 - noPrice));
+      console.log(`   ⚠️  YES 价格不可用，使用推算值: $${finalYesPrice.toFixed(4)} (基于 NO: $${noPrice.toFixed(4)})`);
+    } else if (noPrice === null && yesPrice !== null) {
+      finalNoPrice = Math.max(0, Math.min(1, 1 - yesPrice));
+      console.log(`   ⚠️  NO 价格不可用，使用推算值: $${finalNoPrice.toFixed(4)} (基于 YES: $${yesPrice.toFixed(4)})`);
+    }
+    
+    // 确保价格有效
+    if (finalYesPrice === null || finalNoPrice === null) {
+      console.warn(`   ⚠️  价格数据不完整，跳过本次检查`);
       return;
     }
 
@@ -719,18 +805,18 @@ async function mainLoop() {
     const yesPosition = positions.get(yesTokenId);
     if (yesPosition) {
       // 已有持仓，检查卖出条件
-      if (yesPrice >= SELL_PRICE) {
-        await sellToken(yesPosition, yesPrice);
+      if (finalYesPrice >= SELL_PRICE) {
+        await sellToken(yesPosition, finalYesPrice);
       } else {
         const holdingTime = Math.floor((Date.now() - yesPosition.buyTime.getTime()) / 60000);
-        console.log(`   📊 YES: 价格 $${yesPrice.toFixed(4)} (持仓中，等待卖出，已持仓 ${holdingTime} 分钟)`);
+        console.log(`   📊 YES: 价格 $${finalYesPrice.toFixed(4)} (持仓中，等待卖出，已持仓 ${holdingTime} 分钟)`);
       }
     } else {
       // 无持仓，检查买入条件
-      if (yesPrice <= BUY_PRICE) {
-        await buyToken(yesTokenId, currentMarket, 'YES', yesPrice);
+      if (finalYesPrice <= BUY_PRICE) {
+        await buyToken(yesTokenId, currentMarket, 'YES', finalYesPrice);
       } else {
-        console.log(`   📊 YES: 价格 $${yesPrice.toFixed(4)} (等待买入，阈值 $${BUY_PRICE.toFixed(2)})`);
+        console.log(`   📊 YES: 价格 $${finalYesPrice.toFixed(4)} (等待买入，阈值 $${BUY_PRICE.toFixed(2)})`);
       }
     }
 
@@ -738,18 +824,18 @@ async function mainLoop() {
     const noPosition = positions.get(noTokenId);
     if (noPosition) {
       // 已有持仓，检查卖出条件
-      if (noPrice >= SELL_PRICE) {
-        await sellToken(noPosition, noPrice);
+      if (finalNoPrice >= SELL_PRICE) {
+        await sellToken(noPosition, finalNoPrice);
       } else {
         const holdingTime = Math.floor((Date.now() - noPosition.buyTime.getTime()) / 60000);
-        console.log(`   📊 NO: 价格 $${noPrice.toFixed(4)} (持仓中，等待卖出，已持仓 ${holdingTime} 分钟)`);
+        console.log(`   📊 NO: 价格 $${finalNoPrice.toFixed(4)} (持仓中，等待卖出，已持仓 ${holdingTime} 分钟)`);
       }
     } else {
       // 无持仓，检查买入条件
-      if (noPrice <= BUY_PRICE) {
-        await buyToken(noTokenId, currentMarket, 'NO', noPrice);
+      if (finalNoPrice <= BUY_PRICE) {
+        await buyToken(noTokenId, currentMarket, 'NO', finalNoPrice);
       } else {
-        console.log(`   📊 NO: 价格 $${noPrice.toFixed(4)} (等待买入，阈值 $${BUY_PRICE.toFixed(2)})`);
+        console.log(`   📊 NO: 价格 $${finalNoPrice.toFixed(4)} (等待买入，阈值 $${BUY_PRICE.toFixed(2)})`);
       }
     }
 
