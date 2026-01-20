@@ -90,7 +90,7 @@ function printConfig() {
     console.log(`   指定地址数量: ${targetAddresses.length}`);
     console.log(`   目标地址: ${targetAddresses.slice(0, 3).join(', ')}${targetAddresses.length > 3 ? '...' : ''}`);
   } else {
-    console.log(`   跟随排行榜: 前 50 名`);
+    console.log(`   跟随排行榜: 前 1 名`);
   }
   console.log('');
 }
@@ -313,7 +313,7 @@ async function main() {
       dryRun,                  // 模拟模式
       ...(targetAddresses && targetAddresses.length > 0 
         ? { targetAddresses } 
-        : { topN: 50 }),       // 如果没有指定地址，则跟随前 50 名
+        : { topN: 1 }),       // 如果没有指定地址，则跟随前 1 名
       
       // 回调函数
       onTrade: (trade: any, result: any) => {

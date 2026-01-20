@@ -68,6 +68,13 @@ SUM_TARGET=0.95           # 用0.95 USDC获得1 USDC
 
 # 止损参数
 LEG2_TIMEOUT_SECONDS=100  # 100秒后自动卖出Leg1
+
+# 价格阈值策略（赔率80买 90卖）
+ENABLE_PRICE_THRESHOLD=true  # 启用价格阈值策略
+BUY_PRICE_THRESHOLD=0.80     # 赔率80时买入
+SELL_PRICE_THRESHOLD=0.90    # 赔率90时卖出
+PRICE_CHECK_INTERVAL=1000    # 1秒检查一次价格
+PRICE_THRESHOLD_BUY_AMOUNT=10  # 每次买入10 USDC
 ```
 
 ## 参数说明
@@ -100,6 +107,31 @@ LEG2_TIMEOUT_SECONDS=100  # 100秒后自动卖出Leg1
   - 要监控的币种
   - 支持：ETH, BTC 等
 
+### 价格阈值策略参数（赔率80买 90卖）
+
+- **`ENABLE_PRICE_THRESHOLD`** (默认: false)
+  - 是否启用价格阈值策略
+  - 设置为 `true` 时，会监控市场价格，在达到买入/卖出阈值时自动交易
+
+- **`BUY_PRICE_THRESHOLD`** (默认: 0.80)
+  - 买入价格阈值（赔率）
+  - 当UP或DOWN的价格达到或低于此阈值时，自动买入
+  - 例如：0.80 = 赔率80时买入
+
+- **`SELL_PRICE_THRESHOLD`** (默认: 0.90)
+  - 卖出价格阈值（赔率）
+  - 当持仓的价格达到或高于此阈值时，自动卖出
+  - 例如：0.90 = 赔率90时卖出
+
+- **`PRICE_CHECK_INTERVAL`** (默认: 1000)
+  - 价格检查间隔（毫秒）
+  - 每隔多少毫秒检查一次市场价格
+  - 例如：1000 = 1秒检查一次
+
+- **`PRICE_THRESHOLD_BUY_AMOUNT`** (默认: 10)
+  - 价格阈值策略的买入金额（USDC）
+  - 每次触发买入阈值时，使用多少USDC买入
+
 ## 策略特点
 
 ### ✅ 自动化
@@ -110,6 +142,7 @@ LEG2_TIMEOUT_SECONDS=100  # 100秒后自动卖出Leg1
 - **自动 Merge**：买入后自动 merge 回 USDC.e
 - **自动旋转**：市场结束后自动进入下一个市场
 - **自动赎回**：市场可赎回后自动赎回
+- **价格阈值交易**：赔率80买、90卖，自动监控价格并执行交易（需启用 `ENABLE_PRICE_THRESHOLD=true`）
 
 ### ⚠️ 注意事项
 

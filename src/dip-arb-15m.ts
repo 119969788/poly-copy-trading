@@ -19,6 +19,12 @@ const sumTarget = parseFloat(process.env.SUM_TARGET || '0.95'); // 用0.95u成�
 const leg2TimeoutSeconds = parseInt(process.env.LEG2_TIMEOUT_SECONDS || '100', 10); // 100秒止损
 const coin = process.env.COIN || 'ETH'; // 默认ETH市场
 
+// 价格阈值配置（赔率80买 90卖）
+const buyPriceThreshold = parseFloat(process.env.BUY_PRICE_THRESHOLD || '0.80'); // 0.80买入
+const sellPriceThreshold = parseFloat(process.env.SELL_PRICE_THRESHOLD || '0.90'); // 0.90卖出
+const enablePriceThreshold = process.env.ENABLE_PRICE_THRESHOLD === 'true'; // 是否启用价格阈值策略
+const priceCheckInterval = parseInt(process.env.PRICE_CHECK_INTERVAL || '1000', 10); // 价格检查间隔（毫秒）
+
 // 打印横幅
 function printBanner() {
   console.log('\n═══════════════════════════════════════════════════');
@@ -36,6 +42,14 @@ function printConfig() {
   console.log(`   Leg1 暴跌阈值: ${(dipThreshold * 100).toFixed(0)}%`);
   console.log(`   Leg2 成本目标: ${sumTarget} USDC (获得 1 USDC)`);
   console.log(`   Leg2 止损时间: ${leg2TimeoutSeconds}秒`);
+  if (enablePriceThreshold) {
+    console.log(`   价格阈值策略: ✅ 已启用`);
+    console.log(`   买入阈值: ${buyPriceThreshold} (赔率${(buyPriceThreshold * 100).toFixed(0)})`);
+    console.log(`   卖出阈值: ${sellPriceThreshold} (赔率${(sellPriceThreshold * 100).toFixed(0)})`);
+    console.log(`   价格检查间隔: ${priceCheckInterval}ms`);
+  } else {
+    console.log(`   价格阈值策略: ❌ 未启用`);
+  }
   console.log('');
 }
 
@@ -227,6 +241,12 @@ async function main() {
       console.log(`\n\n🛑 收到 ${signal} 信号，正在优雅停止...\n`);
 
       try {
+        // 停止价格监控
+        if (priceMonitorInterval) {
+          clearInterval(priceMonitorInterval);
+          priceMonitorInterval = null;
+        }
+
         if (dipArbService && typeof dipArbService.stop === 'function') {
           await dipArbService.stop();
         }
@@ -263,6 +283,311 @@ async function main() {
     console.log('   按 Ctrl+C 可以优雅停止\n');
     console.log('⏳ 等待暴跌信号...\n');
 
+    // 价格阈值监控（如果启用）
+    let priceMonitorInterval: NodeJS.Timeout | null = null;
+    let currentPosition: { direction: 'UP' | 'DOWN'; amount: number; price: number } | null = null;
+    let isProcessingPrice = false;
+
+    if (enablePriceThreshold && market?.market) {
+      console.log('📊 启动价格阈值监控...');
+      console.log(`   买入阈值: ${buyPriceThreshold} (赔率${(buyPriceThreshold * 100).toFixed(0)})`);
+      console.log(`   卖出阈值: ${sellPriceThreshold} (赔率${(sellPriceThreshold * 100).toFixed(0)})\n`);
+
+      priceMonitorInterval = setInterval(async () => {
+        if (isProcessingPrice) return;
+
+        try {
+          isProcessingPrice = true;
+          
+          // 获取当前市场价格
+          const marketId = market.market?.id || market.marketId;
+          if (!marketId) {
+            isProcessingPrice = false;
+            return;
+          }
+
+          // 使用 dataApi 获取市场信息
+          const marketData = await (sdk!.dataApi as any).getMarket?.(marketId) ||
+                            await (sdk!.dataApi as any).getMarketInfo?.(marketId) ||
+                            await (sdk!.dataApi as any).getMarketById?.(marketId);
+          
+          if (!marketData) {
+            isProcessingPrice = false;
+            return;
+          }
+
+          // 获取UP和DOWN的价格
+          // 尝试多种可能的字段名
+          const upPrice = parseFloat(
+            marketData.upPrice || 
+            marketData.up?.price || 
+            marketData.outcomes?.[0]?.price || 
+            marketData.prices?.up || 
+            '0'
+          );
+          const downPrice = parseFloat(
+            marketData.downPrice || 
+            marketData.down?.price || 
+            marketData.outcomes?.[1]?.price || 
+            marketData.prices?.down || 
+            '0'
+          );
+
+          // 如果价格无效，跳过
+          if (upPrice === 0 && downPrice === 0) {
+            isProcessingPrice = false;
+            return;
+          }
+
+          // 检查是否有持仓需要卖出
+          if (currentPosition) {
+            const targetPrice = currentPosition.direction === 'UP' ? upPrice : downPrice;
+            
+            // 如果价格达到卖出阈值，执行卖出
+            if (targetPrice >= sellPriceThreshold) {
+              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+              console.log('💰 价格达到卖出阈值！');
+              console.log(`   时间: ${new Date().toLocaleString('zh-CN')}`);
+              console.log(`   方向: ${currentPosition.direction}`);
+              console.log(`   当前价格: ${targetPrice.toFixed(4)}`);
+              console.log(`   卖出阈值: ${sellPriceThreshold}`);
+              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+
+              try {
+                if (!dryRun) {
+                  // 获取持仓的tokenId
+                  const walletAddress = sdk!.tradingService.getAddress();
+                  const positions = await sdk!.dataApi.getPositions(walletAddress);
+                  
+                  // 查找当前持仓的tokenId
+                  let tokenId: string | null = null;
+                  const conditionId = market.market?.conditionId || marketData.conditionId;
+                  const outcomeIndex = currentPosition.direction === 'UP' ? 0 : 1;
+                  
+                  // 尝试从持仓中获取tokenId
+                  const matchingPosition = positions?.find((pos: any) => {
+                    return pos.conditionId === conditionId && 
+                           (pos.outcomeIndex === outcomeIndex || pos.outcome === currentPosition.direction);
+                  });
+                  
+                  if (matchingPosition) {
+                    tokenId = matchingPosition.asset || matchingPosition.tokenId || matchingPosition.token_id;
+                  }
+                  
+                  // 如果找不到tokenId，尝试使用tradingService获取
+                  if (!tokenId && (sdk!.tradingService as any).getTokenId) {
+                    try {
+                      tokenId = await (sdk!.tradingService as any).getTokenId(conditionId, outcomeIndex);
+                    } catch (e) {
+                      // 忽略错误
+                    }
+                  }
+
+                  if (!tokenId) {
+                    console.log('❌ 无法获取tokenId，跳过卖出\n');
+                    isProcessingPrice = false;
+                    return;
+                  }
+
+                  // 执行卖出
+                  const sellResult = await sdk!.tradingService.createMarketOrder({
+                    tokenId: String(tokenId),
+                    side: 'SELL',
+                    amount: currentPosition.amount,
+                    orderType: 'FAK',
+                  });
+
+                  const isSuccess = sellResult?.success === true || 
+                                   (sellResult?.id && !sellResult?.error) ||
+                                   (sellResult?.filled || sellResult?.filledAmount || sellResult?.receipt);
+
+                  if (isSuccess) {
+                    const profit = (targetPrice - currentPosition.price) * currentPosition.amount;
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    console.log('✅ 卖出成功！');
+                    console.log(`   卖出价格: ${targetPrice.toFixed(4)}`);
+                    console.log(`   买入价格: ${currentPosition.price.toFixed(4)}`);
+                    console.log(`   利润: $${profit.toFixed(4)}`);
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+                    // 清除持仓
+                    currentPosition = null;
+                  } else {
+                    console.log('❌ 卖出失败:', sellResult?.error || sellResult?.message || '未知错误\n');
+                  }
+                } else {
+                  console.log('🔍 [模拟模式] 卖出操作已模拟\n');
+                  // 清除持仓
+                  currentPosition = null;
+                }
+              } catch (error: any) {
+                console.error('❌ 卖出时发生错误:', error?.message || error);
+              }
+            }
+          } else {
+            // 没有持仓，检查是否可以买入
+            // 检查UP价格是否达到买入阈值
+            if (upPrice <= buyPriceThreshold) {
+              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+              console.log('📈 UP价格达到买入阈值！');
+              console.log(`   时间: ${new Date().toLocaleString('zh-CN')}`);
+              console.log(`   当前价格: ${upPrice.toFixed(4)}`);
+              console.log(`   买入阈值: ${buyPriceThreshold}`);
+              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+
+              try {
+                // 默认买入金额（可以从环境变量配置）
+                const buyAmount = parseFloat(process.env.PRICE_THRESHOLD_BUY_AMOUNT || '10');
+                
+                // 获取tokenId
+                const conditionId = market.market?.conditionId || marketData.conditionId;
+                const outcomeIndex = 0; // UP
+                
+                let tokenId: string | null = null;
+                
+                // 尝试使用tradingService获取tokenId
+                if ((sdk!.tradingService as any).getTokenId) {
+                  try {
+                    tokenId = await (sdk!.tradingService as any).getTokenId(conditionId, outcomeIndex);
+                  } catch (e) {
+                    // 忽略错误
+                  }
+                }
+                
+                if (!tokenId) {
+                  console.log('❌ 无法获取tokenId，跳过买入\n');
+                  isProcessingPrice = false;
+                  return;
+                }
+                
+                if (!dryRun) {
+                  // 执行买入（使用USDC金额）
+                  const buyResult = await sdk!.tradingService.createMarketOrder({
+                    tokenId: String(tokenId),
+                    side: 'BUY',
+                    amount: buyAmount, // USDC金额
+                    orderType: 'FAK',
+                  });
+
+                  const isSuccess = buyResult?.success === true || 
+                                   (buyResult?.id && !buyResult?.error) ||
+                                   (buyResult?.filled || buyResult?.filledAmount || buyResult?.receipt);
+
+                  if (isSuccess) {
+                    // 计算实际买入的shares数量
+                    const sharesAmount = buyResult?.filled || buyResult?.filledAmount || (buyAmount / upPrice);
+                    currentPosition = {
+                      direction: 'UP',
+                      amount: sharesAmount,
+                      price: upPrice,
+                    };
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    console.log('✅ 买入成功！');
+                    console.log(`   买入价格: ${upPrice.toFixed(4)}`);
+                    console.log(`   买入金额: $${buyAmount}`);
+                    console.log(`   买入数量: ${sharesAmount.toFixed(4)} shares`);
+                    console.log(`   等待价格达到 ${sellPriceThreshold} 时卖出`);
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+                  } else {
+                    console.log('❌ 买入失败:', buyResult?.error || buyResult?.message || '未知错误\n');
+                  }
+                } else {
+                  console.log('🔍 [模拟模式] 买入操作已模拟\n');
+                  currentPosition = {
+                    direction: 'UP',
+                    amount: buyAmount / upPrice, // 模拟shares数量
+                    price: upPrice,
+                  };
+                }
+              } catch (error: any) {
+                console.error('❌ 买入时发生错误:', error?.message || error);
+              }
+            }
+            // 检查DOWN价格是否达到买入阈值
+            else if (downPrice <= buyPriceThreshold) {
+              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+              console.log('📉 DOWN价格达到买入阈值！');
+              console.log(`   时间: ${new Date().toLocaleString('zh-CN')}`);
+              console.log(`   当前价格: ${downPrice.toFixed(4)}`);
+              console.log(`   买入阈值: ${buyPriceThreshold}`);
+              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+
+              try {
+                // 默认买入金额（可以从环境变量配置）
+                const buyAmount = parseFloat(process.env.PRICE_THRESHOLD_BUY_AMOUNT || '10');
+                
+                // 获取tokenId
+                const conditionId = market.market?.conditionId || marketData.conditionId;
+                const outcomeIndex = 1; // DOWN
+                
+                let tokenId: string | null = null;
+                
+                // 尝试使用tradingService获取tokenId
+                if ((sdk!.tradingService as any).getTokenId) {
+                  try {
+                    tokenId = await (sdk!.tradingService as any).getTokenId(conditionId, outcomeIndex);
+                  } catch (e) {
+                    // 忽略错误
+                  }
+                }
+                
+                if (!tokenId) {
+                  console.log('❌ 无法获取tokenId，跳过买入\n');
+                  isProcessingPrice = false;
+                  return;
+                }
+                
+                if (!dryRun) {
+                  // 执行买入（使用USDC金额）
+                  const buyResult = await sdk!.tradingService.createMarketOrder({
+                    tokenId: String(tokenId),
+                    side: 'BUY',
+                    amount: buyAmount, // USDC金额
+                    orderType: 'FAK',
+                  });
+
+                  const isSuccess = buyResult?.success === true || 
+                                   (buyResult?.id && !buyResult?.error) ||
+                                   (buyResult?.filled || buyResult?.filledAmount || buyResult?.receipt);
+
+                  if (isSuccess) {
+                    // 计算实际买入的shares数量
+                    const sharesAmount = buyResult?.filled || buyResult?.filledAmount || (buyAmount / downPrice);
+                    currentPosition = {
+                      direction: 'DOWN',
+                      amount: sharesAmount,
+                      price: downPrice,
+                    };
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    console.log('✅ 买入成功！');
+                    console.log(`   买入价格: ${downPrice.toFixed(4)}`);
+                    console.log(`   买入金额: $${buyAmount}`);
+                    console.log(`   买入数量: ${sharesAmount.toFixed(4)} shares`);
+                    console.log(`   等待价格达到 ${sellPriceThreshold} 时卖出`);
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+                  } else {
+                    console.log('❌ 买入失败:', buyResult?.error || buyResult?.message || '未知错误\n');
+                  }
+                } else {
+                  console.log('🔍 [模拟模式] 买入操作已模拟\n');
+                  currentPosition = {
+                    direction: 'DOWN',
+                    amount: buyAmount / downPrice, // 模拟shares数量
+                    price: downPrice,
+                  };
+                }
+              } catch (error: any) {
+                console.error('❌ 买入时发生错误:', error?.message || error);
+              }
+            }
+          }
+        } catch (error: any) {
+          console.error('❌ 价格监控错误:', error?.message || error);
+        } finally {
+          isProcessingPrice = false;
+        }
+      }, priceCheckInterval);
+    }
+
     // 定期打印统计信息
     const statsInterval = setInterval(() => {
       if (dipArbService && typeof dipArbService.getStats === 'function') {
@@ -274,6 +599,9 @@ async function main() {
           console.log(`   Leg2 执行: ${stats.leg2Filled || 0}`);
           if (stats.profit !== undefined) {
             console.log(`   总利润: $${stats.profit.toFixed(4)}`);
+          }
+          if (enablePriceThreshold && currentPosition) {
+            console.log(`   当前持仓: ${currentPosition.direction} @ ${currentPosition.price.toFixed(4)}`);
           }
           console.log('');
         }
@@ -287,6 +615,12 @@ async function main() {
     console.error('\n❌ 启动失败:', error?.message || error);
     if (error?.stack) {
       console.error('\n堆栈跟踪:', error.stack);
+    }
+
+    // 停止价格监控
+    if (priceMonitorInterval) {
+      clearInterval(priceMonitorInterval);
+      priceMonitorInterval = null;
     }
 
     if (dipArbService && typeof dipArbService.stop === 'function') {
