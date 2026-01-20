@@ -559,9 +559,17 @@ async function find15mMarket(coin: string): Promise<any> {
   }
 }
 
+// 市场关闭标记（避免重复尝试已关闭的市场）
+let marketClosedTokens = new Set<string>();
+
 // 获取当前市场价格
 async function getCurrentPrice(tokenId: string): Promise<number | null> {
   if (!sdk) {
+    return null;
+  }
+
+  // 如果该token已被标记为市场关闭，直接返回null，避免重复尝试
+  if (marketClosedTokens.has(tokenId)) {
     return null;
   }
 
@@ -625,10 +633,15 @@ async function getCurrentPrice(tokenId: string): Promise<number | null> {
           }
         }
       } catch (e: any) {
-        // 订单簿不存在或获取失败，这是正常的（市场可能已关闭）
-        // 不输出错误，静默失败
-        if (!e?.message?.includes('No orderbook') && !e?.message?.includes('404')) {
-          // 只有非404错误才记录
+        // 订单簿不存在或获取失败（404错误），标记为市场关闭
+        if (e?.message?.includes('No orderbook') || 
+            e?.message?.includes('404') || 
+            e?.status === 404 ||
+            e?.response?.status === 404) {
+          // 标记该token的市场已关闭，避免重复尝试
+          marketClosedTokens.add(tokenId);
+          // 静默失败，不输出错误
+          return null;
         }
       }
     }
@@ -953,34 +966,59 @@ async function mainLoop() {
 
     // 如果无法获取价格，检查市场状态
     if (yesPrice === null && noPrice === null) {
-      console.warn(`   ⚠️  无法获取价格（市场可能已关闭或订单簿不存在）`);
+      // 如果两个token都被标记为市场关闭，只输出一次警告
+      const bothClosed = marketClosedTokens.has(yesTokenId) && marketClosedTokens.has(noTokenId);
+      
+      if (!bothClosed) {
+        // 首次检测到市场关闭，输出警告
+        console.warn(`   ⚠️  无法获取价格（市场可能已关闭或订单簿不存在）`);
+      }
       
       // 检查市场是否已关闭
       const marketStatus = await checkMarketStatus(currentMarket);
-      if (marketStatus === 'closed' || marketStatus === 'ended') {
-        console.warn(`   ⚠️  市场已关闭，尝试查找新的活跃市场...`);
+      if (marketStatus === 'closed' || marketStatus === 'ended' || bothClosed) {
+        // 标记所有token为已关闭
+        if (yesTokenId) marketClosedTokens.add(yesTokenId);
+        if (noTokenId) marketClosedTokens.add(noTokenId);
         
-        // 尝试查找新的活跃市场
-        const newMarket = await find15mMarket(MARKET_COIN);
-        if (newMarket && newMarket.slug !== currentMarket.slug) {
-          console.log(`   ✅ 找到新的活跃市场: ${newMarket.slug || newMarket.name || 'N/A'}`);
-          currentMarket = newMarket;
-          
-          // 重新订阅实时价格
-          if (sdk.realtime && newMarket.tokens) {
-            const tokenIds = newMarket.tokens
-              .map((t: any) => t.tokenId || t.id)
-              .filter(Boolean);
-            if (tokenIds.length > 0) {
-              sdk.realtime.subscribeMarket(tokenIds);
-              console.log(`   ✅ 已订阅新市场的实时价格更新`);
+        // 只在首次检测到时输出警告
+        if (!bothClosed) {
+          console.warn(`   ⚠️  市场已关闭，尝试查找新的活跃市场...`);
+        }
+        
+        // 每5次循环尝试一次查找新市场（避免频繁尝试）
+        const retryCount = (global as any).marketRetryCount || 0;
+        (global as any).marketRetryCount = retryCount + 1;
+        
+        if (retryCount % 5 === 0) {
+          // 尝试查找新的活跃市场
+          const newMarket = await find15mMarket(MARKET_COIN);
+          if (newMarket && newMarket.slug !== currentMarket.slug) {
+            console.log(`   ✅ 找到新的活跃市场: ${newMarket.slug || newMarket.name || 'N/A'}`);
+            currentMarket = newMarket;
+            
+            // 清除关闭标记，重置重试计数
+            marketClosedTokens.clear();
+            (global as any).marketRetryCount = 0;
+            
+            // 重新订阅实时价格
+            if (sdk.realtime && newMarket.tokens) {
+              const tokenIds = newMarket.tokens
+                .map((t: any) => t.tokenId || t.id)
+                .filter(Boolean);
+              if (tokenIds.length > 0) {
+                sdk.realtime.subscribeMarket(tokenIds);
+                console.log(`   ✅ 已订阅新市场的实时价格更新`);
+              }
             }
+            
+            // 继续下一次循环（使用新市场）
+            return;
+          } else if (retryCount === 0) {
+            // 只在首次失败时输出提示
+            console.warn(`   ⚠️  未找到新的活跃市场，请手动更新 ARBITRAGE_EVENT_SLUG`);
+            console.warn(`   💡 提示：将每5次循环尝试一次查找新市场`);
           }
-          
-          // 继续下一次循环（使用新市场）
-          return;
-        } else {
-          console.warn(`   ⚠️  未找到新的活跃市场，请手动更新 ARBITRAGE_EVENT_SLUG`);
         }
       }
       
