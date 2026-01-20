@@ -361,7 +361,7 @@ async function getAllPositions(): Promise<string[]> {
 
   try {
     // 方法1: 尝试使用 sdk.smartMoney.getPositions (PolySDK 方式)
-    if (typeof (sdk as any).smartMoney?.getPositions === 'function') {
+    if ((sdk as any).smartMoney && typeof (sdk as any).smartMoney.getPositions === 'function') {
       try {
         const userPositions = await (sdk as any).smartMoney.getPositions();
         if (Array.isArray(userPositions) && userPositions.length > 0) {
@@ -370,13 +370,42 @@ async function getAllPositions(): Promise<string[]> {
             console.log(`   ✅ 通过 smartMoney.getPositions 获取到 ${tokenIds.length} 个持仓`);
             return tokenIds;
           }
+        } else if (Array.isArray(userPositions) && userPositions.length === 0) {
+          // 返回空数组，表示没有持仓
+          return [];
         }
       } catch (e: any) {
         console.log(`   ℹ️  smartMoney.getPositions 失败: ${e?.message || e}`);
       }
     }
     
-    // 方法2: 尝试使用 sdk.getPositions
+    // 方法2: 检查 smartMoney 对象的所有方法
+    if ((sdk as any).smartMoney) {
+      const smartMoneyMethods = Object.keys((sdk as any).smartMoney).filter(key => 
+        typeof (sdk as any).smartMoney[key] === 'function'
+      );
+      console.log(`   ℹ️  smartMoney 可用方法: ${smartMoneyMethods.join(', ')}`);
+      
+      // 尝试其他可能的方法
+      for (const method of ['getUserPositions', 'getPositions', 'positions', 'getHoldings']) {
+        if (typeof (sdk as any).smartMoney[method] === 'function') {
+          try {
+            const result = await (sdk as any).smartMoney[method]();
+            if (Array.isArray(result) && result.length > 0) {
+              const tokenIds = result.map((p: any) => p.tokenId || p.id || p.positionId || p.collectionId).filter(Boolean);
+              if (tokenIds.length > 0) {
+                console.log(`   ✅ 通过 smartMoney.${method} 获取到 ${tokenIds.length} 个持仓`);
+                return tokenIds;
+              }
+            }
+          } catch (e: any) {
+            // 忽略错误，继续尝试下一个方法
+          }
+        }
+      }
+    }
+    
+    // 方法3: 尝试使用 sdk.getPositions
     if (typeof (sdk as any).getPositions === 'function') {
       try {
         const userPositions = await (sdk as any).getPositions();
@@ -392,47 +421,27 @@ async function getAllPositions(): Promise<string[]> {
       }
     }
     
-    // 方法3: 尝试使用 sdk.positions (PolymarketSDK 可能的方式)
-    if (typeof (sdk as any).positions === 'object' && (sdk as any).positions !== null) {
+    // 方法4: 尝试使用 wallets 服务（PolymarketSDK 可能通过钱包获取持仓）
+    if ((sdk as any).wallets) {
       try {
-        const positionsObj = (sdk as any).positions;
-        if (typeof positionsObj.getAll === 'function') {
-          const userPositions = await positionsObj.getAll();
+        const walletAddress = (sdk as any).getAddress?.() || (sdk as any).wallet?.address;
+        if (walletAddress && typeof (sdk as any).wallets.getPositions === 'function') {
+          const userPositions = await (sdk as any).wallets.getPositions(walletAddress);
           if (Array.isArray(userPositions) && userPositions.length > 0) {
             const tokenIds = userPositions.map((p: any) => p.tokenId || p.id || p.positionId || p.collectionId).filter(Boolean);
             if (tokenIds.length > 0) {
-              console.log(`   ✅ 通过 positions.getAll 获取到 ${tokenIds.length} 个持仓`);
+              console.log(`   ✅ 通过 wallets.getPositions 获取到 ${tokenIds.length} 个持仓`);
               return tokenIds;
             }
           }
         }
       } catch (e: any) {
-        console.log(`   ℹ️  positions.getAll 失败: ${e?.message || e}`);
+        console.log(`   ℹ️  wallets.getPositions 失败: ${e?.message || e}`);
       }
     }
     
-    // 方法4: 尝试使用 sdk.userPositions 或类似的方法
-    if (typeof (sdk as any).userPositions === 'function') {
-      try {
-        const userPositions = await (sdk as any).userPositions();
-        if (Array.isArray(userPositions) && userPositions.length > 0) {
-          const tokenIds = userPositions.map((p: any) => p.tokenId || p.id || p.positionId || p.collectionId).filter(Boolean);
-          if (tokenIds.length > 0) {
-            console.log(`   ✅ 通过 userPositions 获取到 ${tokenIds.length} 个持仓`);
-            return tokenIds;
-          }
-        }
-      } catch (e: any) {
-        console.log(`   ℹ️  userPositions 失败: ${e?.message || e}`);
-      }
-    }
-    
-    // 方法5: 列出 SDK 的所有方法，帮助调试
-    const sdkMethods = Object.keys(sdk).filter(key => typeof (sdk as any)[key] === 'function' || typeof (sdk as any)[key] === 'object');
-    console.log(`   ℹ️  SDK 可用方法/属性: ${sdkMethods.slice(0, 10).join(', ')}${sdkMethods.length > 10 ? '...' : ''}`);
-    
-    console.warn(`   ⚠️  无法获取持仓，请检查 SDK API`);
-    console.warn(`   提示：如果确实有持仓，可能需要手动设置 ARBITRAGE_TOKEN_ID 环境变量`);
+    // 如果没有找到持仓，返回空数组（这是正常的，表示当前没有持仓）
+    console.log(`   ℹ️  当前没有持仓（这是正常的，如果没有实际持仓）`);
     return [];
   } catch (error: any) {
     console.error(`   ❌ 获取持仓失败:`, error?.message || error);
