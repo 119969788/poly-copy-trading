@@ -25,6 +25,43 @@ const EVENT_SLUG = process.env.ARBITRAGE_EVENT_SLUG || ''; // 事件 slug（如�
 const TRADE_SIZE = parseFloat(process.env.ARBITRAGE_TRADE_SIZE || '10'); // 每次交易金额（USDC）
 const DRY_RUN = process.env.DRY_RUN !== 'false'; // 模拟模式
 
+// 纯套利策略配置（参考：https://github.com/terauss/Polymarket-trading-bot-15min-BTC）
+const USE_PURE_ARBITRAGE = process.env.USE_PURE_ARBITRAGE === 'true'; // 是否使用纯套利策略（UP+DOWN < $1.00）
+const ARBITRAGE_COST_THRESHOLD = parseFloat(process.env.ARBITRAGE_COST_THRESHOLD || '0.99'); // 纯套利成本阈值（默认0.99，即UP+DOWN < 0.99时买入）
+const ORDER_SIZE = parseFloat(process.env.ARBITRAGE_ORDER_SIZE || '5'); // 纯套利策略的订单大小（shares数量）
+
+// 统计跟踪
+interface TradeStats {
+  totalOpportunities: number; // 检测到的套利机会数
+  totalTrades: number; // 总交易数
+  successfulTrades: number; // 成功交易数
+  totalInvested: number; // 总投入
+  totalPayout: number; // 总收益
+  totalProfit: number; // 总利润
+  trades: Array<{
+    timestamp: Date;
+    marketSlug: string;
+    side: 'YES' | 'NO' | 'BOTH';
+    buyPrice: number;
+    sellPrice?: number;
+    amount: number;
+    invested: number;
+    payout?: number;
+    profit?: number;
+    profitPercent?: number;
+  }>;
+}
+
+const stats: TradeStats = {
+  totalOpportunities: 0,
+  totalTrades: 0,
+  successfulTrades: 0,
+  totalInvested: 0,
+  totalPayout: 0,
+  totalProfit: 0,
+  trades: [],
+};
+
 // SDK 实例
 let sdk: PolymarketSDK | null = null;
 
@@ -49,8 +86,52 @@ let currentTokenId: string | null = null;
 function printBanner() {
   console.log('\n═══════════════════════════════════════════════════');
   console.log('   15分钟市场套利策略');
-  console.log('   赔率80买（价格<=0.80买入），90卖（价格>=0.90卖出）');
+  if (USE_PURE_ARBITRAGE) {
+    console.log('   纯套利策略（UP + DOWN < $1.00时买入，保证盈利）');
+    console.log('   参考：https://github.com/terauss/Polymarket-trading-bot-15min-BTC');
+  } else {
+    console.log('   价格阈值策略（赔率80买，90卖）');
+  }
   console.log('═══════════════════════════════════════════════════\n');
+}
+
+// 打印统计信息
+function printStats() {
+  if (stats.totalTrades === 0) {
+    return;
+  }
+  
+  console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('📊 统计信息');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  
+  if (USE_PURE_ARBITRAGE) {
+    console.log(`   检测到的套利机会: ${stats.totalOpportunities}`);
+    console.log(`   总交易数: ${stats.totalTrades}`);
+    console.log(`   成功交易: ${stats.successfulTrades}`);
+    console.log(`   总投入: $${stats.totalInvested.toFixed(4)}`);
+    console.log(`   总收益: $${stats.totalPayout.toFixed(4)}`);
+    console.log(`   总利润: $${stats.totalProfit.toFixed(4)}`);
+    
+    if (stats.totalInvested > 0) {
+      const profitPercent = (stats.totalProfit / stats.totalInvested) * 100;
+      console.log(`   利润率: ${profitPercent.toFixed(2)}%`);
+    }
+    
+    if (stats.totalTrades > 0) {
+      const winRate = (stats.successfulTrades / stats.totalTrades) * 100;
+      console.log(`   成功率: ${winRate.toFixed(2)}%`);
+    }
+  } else {
+    console.log(`   总交易数: ${stats.totalTrades}`);
+    console.log(`   成功交易: ${stats.successfulTrades}`);
+    if (stats.totalTrades > 0) {
+      const winRate = (stats.successfulTrades / stats.totalTrades) * 100;
+      console.log(`   成功率: ${winRate.toFixed(2)}%`);
+    }
+  }
+  
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 }
 
 // 打印配置
@@ -59,9 +140,18 @@ function printConfig() {
   console.log(`   模式: ${DRY_RUN ? '🔍 模拟模式' : '💰 实盘模式'}`);
   console.log(`   监控币种: ${MARKET_COIN}`);
   console.log(`   市场周期: 15分钟`);
-  console.log(`   买入价格阈值: $${BUY_PRICE.toFixed(2)} (赔率80)`);
-  console.log(`   卖出价格阈值: $${SELL_PRICE.toFixed(2)} (赔率90)`);
-  console.log(`   交易金额: $${TRADE_SIZE} USDC`);
+  
+  if (USE_PURE_ARBITRAGE) {
+    console.log(`   策略: 🎯 纯套利策略（UP + DOWN < $${ARBITRAGE_COST_THRESHOLD.toFixed(2)}）`);
+    console.log(`   订单大小: ${ORDER_SIZE} shares (每边)`);
+    console.log(`   成本阈值: $${ARBITRAGE_COST_THRESHOLD.toFixed(2)} (总成本需小于此值)`);
+  } else {
+    console.log(`   策略: 📊 价格阈值策略`);
+    console.log(`   买入价格阈值: $${BUY_PRICE.toFixed(2)} (赔率80)`);
+    console.log(`   卖出价格阈值: $${SELL_PRICE.toFixed(2)} (赔率90)`);
+    console.log(`   交易金额: $${TRADE_SIZE} USDC`);
+  }
+  
   console.log(`   检查间隔: ${CHECK_INTERVAL / 1000} 秒`);
   console.log(`   持仓超时: ${HOLDING_TIMEOUT / 60000} 分钟`);
   console.log('');
@@ -857,7 +947,69 @@ async function getCurrentPrice(tokenId: string): Promise<number | null> {
   }
 }
 
-// 买入代币
+// 纯套利策略：买入代币（指定shares数量）
+async function buyTokenPureArbitrage(tokenId: string, market: any, side: 'YES' | 'NO', price: number, shares: number): Promise<boolean> {
+  if (!sdk || !sdk.tradingService) {
+    console.error('   ❌ SDK 或 TradingService 未初始化');
+    return false;
+  }
+
+  try {
+    if (DRY_RUN) {
+      // 模拟模式
+      positions.set(tokenId, {
+        tokenId,
+        conditionId: market.conditionId || '',
+        marketSlug: market.slug || market.name || '',
+        buyPrice: price,
+        buyTime: new Date(),
+        amount: shares,
+        side,
+      });
+      return true;
+    }
+    
+    // 实盘买入
+    try {
+      // 计算需要的USDC金额
+      const usdcAmount = price * shares;
+      
+      // 使用市场订单（FAK - Fill and Kill）
+      const order = await sdk.tradingService.createMarketOrder({
+        tokenId,
+        side: 'BUY',
+        amount: usdcAmount, // USDC金额
+        orderType: 'FAK',
+      });
+
+      if (order && order.id) {
+        // 计算实际买入的shares数量
+        const actualShares = order.filledSize || (order.filled || shares);
+        
+        positions.set(tokenId, {
+          tokenId,
+          conditionId: market.conditionId || '',
+          marketSlug: market.slug || market.name || '',
+          buyPrice: price,
+          buyTime: new Date(),
+          amount: actualShares,
+          side,
+        });
+        return true;
+      } else {
+        return false;
+      }
+    } catch (error: any) {
+      console.error(`   ❌ 买入失败:`, error?.message || error);
+      return false;
+    }
+  } catch (error: any) {
+    console.error(`   ❌ 买入错误:`, error?.message || error);
+    return false;
+  }
+}
+
+// 买入代币（价格阈值策略）
 async function buyToken(tokenId: string, market: any, side: 'YES' | 'NO', price: number): Promise<boolean> {
   if (!sdk || !sdk.tradingService) {
     console.error('   ❌ SDK 或 TradingService 未初始化');
@@ -1220,41 +1372,111 @@ async function mainLoop() {
       return;
     }
 
-    // 检查 YES 代币
-    const yesPosition = positions.get(yesTokenId);
-    if (yesPosition) {
-      // 已有持仓，检查卖出条件
-      if (finalYesPrice >= SELL_PRICE) {
-        await sellToken(yesPosition, finalYesPrice);
-      } else {
+    // 纯套利策略：检查 UP + DOWN 总成本
+    if (USE_PURE_ARBITRAGE) {
+      const totalCost = finalYesPrice + finalNoPrice;
+      
+      // 检查是否已有持仓（纯套利需要同时持有UP和DOWN）
+      const yesPosition = positions.get(yesTokenId);
+      const noPosition = positions.get(noTokenId);
+      const hasBothPositions = yesPosition && noPosition;
+      
+      if (hasBothPositions) {
+        // 已有持仓，等待市场结束或价格回归
         const holdingTime = Math.floor((Date.now() - yesPosition.buyTime.getTime()) / 60000);
-        console.log(`   📊 YES: 价格 $${finalYesPrice.toFixed(4)} (持仓中，等待卖出，已持仓 ${holdingTime} 分钟)`);
+        console.log(`   📊 纯套利持仓中`);
+        console.log(`      UP: $${finalYesPrice.toFixed(4)} | DOWN: $${finalNoPrice.toFixed(4)}`);
+        console.log(`      总成本: $${(yesPosition.buyPrice + noPosition.buyPrice).toFixed(4)}`);
+        console.log(`      当前总价: $${totalCost.toFixed(4)}`);
+        console.log(`      已持仓: ${holdingTime} 分钟`);
+        console.log(`      预期利润: $${(1.00 - (yesPosition.buyPrice + noPosition.buyPrice)).toFixed(4)} per share`);
+      } else if (totalCost < ARBITRAGE_COST_THRESHOLD) {
+        // 检测到套利机会
+        stats.totalOpportunities++;
+        const profitPerShare = 1.00 - totalCost;
+        const profitPercent = (profitPerShare / totalCost) * 100;
+        const totalInvestment = totalCost * ORDER_SIZE;
+        const expectedPayout = 1.00 * ORDER_SIZE;
+        const expectedProfit = profitPerShare * ORDER_SIZE;
+        
+        console.log('\n🎯 纯套利机会检测到！');
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log(`   UP 价格: $${finalYesPrice.toFixed(4)}`);
+        console.log(`   DOWN 价格: $${finalNoPrice.toFixed(4)}`);
+        console.log(`   总成本: $${totalCost.toFixed(4)}`);
+        console.log(`   利润/股: $${profitPerShare.toFixed(4)}`);
+        console.log(`   利润率: ${profitPercent.toFixed(2)}%`);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log(`   订单大小: ${ORDER_SIZE} shares (每边)`);
+        console.log(`   总投入: $${totalInvestment.toFixed(4)}`);
+        console.log(`   预期收益: $${expectedPayout.toFixed(4)}`);
+        console.log(`   预期利润: $${expectedProfit.toFixed(4)}`);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+        
+        // 同时买入UP和DOWN
+        const buyYes = await buyTokenPureArbitrage(yesTokenId, currentMarket, 'YES', finalYesPrice, ORDER_SIZE);
+        const buyNo = await buyTokenPureArbitrage(noTokenId, currentMarket, 'NO', finalNoPrice, ORDER_SIZE);
+        
+        if (buyYes && buyNo) {
+          stats.totalTrades += 2;
+          stats.successfulTrades += 2;
+          stats.totalInvested += totalInvestment;
+          
+          // 记录交易
+          stats.trades.push({
+            timestamp: new Date(),
+            marketSlug: currentMarket.slug || currentMarket.name || '',
+            side: 'BOTH',
+            buyPrice: totalCost,
+            amount: ORDER_SIZE,
+            invested: totalInvestment,
+          });
+          
+          console.log(`   ✅ 纯套利执行成功！`);
+        } else {
+          console.log(`   ⚠️  纯套利执行部分失败`);
+        }
+      } else {
+        console.log(`   📊 扫描中... UP: $${finalYesPrice.toFixed(4)} + DOWN: $${finalNoPrice.toFixed(4)} = $${totalCost.toFixed(4)} (需要 < $${ARBITRAGE_COST_THRESHOLD.toFixed(2)})`);
       }
     } else {
-      // 无持仓，检查买入条件
-      if (finalYesPrice <= BUY_PRICE) {
-        await buyToken(yesTokenId, currentMarket, 'YES', finalYesPrice);
+      // 价格阈值策略（原有逻辑）
+      // 检查 YES 代币
+      const yesPosition = positions.get(yesTokenId);
+      if (yesPosition) {
+        // 已有持仓，检查卖出条件
+        if (finalYesPrice >= SELL_PRICE) {
+          await sellToken(yesPosition, finalYesPrice);
+        } else {
+          const holdingTime = Math.floor((Date.now() - yesPosition.buyTime.getTime()) / 60000);
+          console.log(`   📊 YES: 价格 $${finalYesPrice.toFixed(4)} (持仓中，等待卖出，已持仓 ${holdingTime} 分钟)`);
+        }
       } else {
-        console.log(`   📊 YES: 价格 $${finalYesPrice.toFixed(4)} (等待买入，阈值 $${BUY_PRICE.toFixed(2)})`);
+        // 无持仓，检查买入条件
+        if (finalYesPrice <= BUY_PRICE) {
+          await buyToken(yesTokenId, currentMarket, 'YES', finalYesPrice);
+        } else {
+          console.log(`   📊 YES: 价格 $${finalYesPrice.toFixed(4)} (等待买入，阈值 $${BUY_PRICE.toFixed(2)})`);
+        }
       }
-    }
 
-    // 检查 NO 代币
-    const noPosition = positions.get(noTokenId);
-    if (noPosition) {
-      // 已有持仓，检查卖出条件
-      if (finalNoPrice >= SELL_PRICE) {
-        await sellToken(noPosition, finalNoPrice);
+      // 检查 NO 代币
+      const noPosition = positions.get(noTokenId);
+      if (noPosition) {
+        // 已有持仓，检查卖出条件
+        if (finalNoPrice >= SELL_PRICE) {
+          await sellToken(noPosition, finalNoPrice);
+        } else {
+          const holdingTime = Math.floor((Date.now() - noPosition.buyTime.getTime()) / 60000);
+          console.log(`   📊 NO: 价格 $${finalNoPrice.toFixed(4)} (持仓中，等待卖出，已持仓 ${holdingTime} 分钟)`);
+        }
       } else {
-        const holdingTime = Math.floor((Date.now() - noPosition.buyTime.getTime()) / 60000);
-        console.log(`   📊 NO: 价格 $${finalNoPrice.toFixed(4)} (持仓中，等待卖出，已持仓 ${holdingTime} 分钟)`);
-      }
-    } else {
-      // 无持仓，检查买入条件
-      if (finalNoPrice <= BUY_PRICE) {
-        await buyToken(noTokenId, currentMarket, 'NO', finalNoPrice);
-      } else {
-        console.log(`   📊 NO: 价格 $${finalNoPrice.toFixed(4)} (等待买入，阈值 $${BUY_PRICE.toFixed(2)})`);
+        // 无持仓，检查买入条件
+        if (finalNoPrice <= BUY_PRICE) {
+          await buyToken(noTokenId, currentMarket, 'NO', finalNoPrice);
+        } else {
+          console.log(`   📊 NO: 价格 $${finalNoPrice.toFixed(4)} (等待买入，阈值 $${BUY_PRICE.toFixed(2)})`);
+        }
       }
     }
 
@@ -1467,6 +1689,9 @@ async function main() {
     process.on('SIGINT', async () => {
       console.log('\n\n⏹️ 正在停止套利策略...');
       clearInterval(intervalId);
+      
+      // 显示统计信息
+      printStats();
       
       // 显示当前持仓
       if (positions.size > 0) {
