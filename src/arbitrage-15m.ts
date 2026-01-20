@@ -581,33 +581,18 @@ async function main() {
     // 查找15分钟市场（优先使用 DipArbService，因为它专门用于15分钟市场）
     console.log(`🔍 正在查找 ${MARKET_COIN} 15分钟市场...`);
     
-    let dipArbResult: any = null;
-    if (sdk.dipArb && typeof sdk.dipArb.findAndStart === 'function') {
+    // 先确保 DipArb 服务没有在运行
+    if (sdk.dipArb && typeof sdk.dipArb.stop === 'function') {
       try {
-        console.log(`   [DipArb] 使用 DipArb 服务查找市场...`);
-        dipArbResult = await sdk.dipArb.findAndStart({
-          coin: MARKET_COIN,
-          preferDuration: '15m',
-        });
-        
-        if (dipArbResult && dipArbResult.market) {
-          currentMarket = dipArbResult.market;
-          console.log(`   [DipArb] 找到市场: ${dipArbResult.market.name || dipArbResult.market.slug || 'N/A'}`);
-          
-          // 停止 dipArb（我们只需要市场信息，不使用它的交易功能）
-          if (typeof sdk.dipArb.stop === 'function') {
-            await sdk.dipArb.stop();
-          }
-        }
+        await sdk.dipArb.stop();
+        console.log(`   🔄 确保 DipArb 服务已停止`);
       } catch (e: any) {
-        console.log(`   ⚠️  DipArb 查找失败: ${e?.message || e}`);
+        // 如果停止失败（可能没有运行），继续
       }
     }
     
-    // 如果 DipArb 没找到，尝试其他方法
-    if (!currentMarket) {
-      currentMarket = await find15mMarket(MARKET_COIN);
-    }
+    // 使用统一的查找函数（内部会处理 DipArb）
+    currentMarket = await find15mMarket(MARKET_COIN);
 
     // 如果找不到市场，尝试使用手动指定的代币ID或条件ID
     if (!currentMarket) {
