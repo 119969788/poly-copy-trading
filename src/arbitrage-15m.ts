@@ -21,6 +21,7 @@ const SELL_PRICE = parseFloat(process.env.ARBITRAGE_SELL_PRICE || '0.90'); // �
 const CHECK_INTERVAL = parseInt(process.env.ARBITRAGE_CHECK_INTERVAL || '60000'); // 检查间隔（毫秒，默认60秒）
 const HOLDING_TIMEOUT = parseInt(process.env.ARBITRAGE_HOLDING_TIMEOUT || '900000'); // 持仓超时（毫秒，默认15分钟=900000）
 const MARKET_COIN = process.env.ARBITRAGE_MARKET_COIN || 'ETH'; // 监控的市场币种（ETH, BTC, SOL等）
+const EVENT_SLUG = process.env.ARBITRAGE_EVENT_SLUG || ''; // 事件 slug（如：eth-updown-15m-1768877100）
 const TRADE_SIZE = parseFloat(process.env.ARBITRAGE_TRADE_SIZE || '10'); // 每次交易金额（USDC）
 const DRY_RUN = process.env.DRY_RUN !== 'false'; // 模拟模式
 
@@ -66,6 +67,99 @@ function printConfig() {
   console.log('');
 }
 
+// 通过事件 slug 直接获取市场信息（最可靠的方法）
+async function getMarketByEventSlug(eventSlug: string): Promise<any> {
+  try {
+    console.log(`   🔍 通过事件 slug 获取市场: ${eventSlug}`);
+    
+    // 1. 先获取 event 信息
+    const eventUrl = `https://gamma-api.polymarket.com/events/slug/${eventSlug}`;
+    const eventRes = await fetch(eventUrl);
+    
+    if (!eventRes.ok) {
+      console.log(`   ⚠️  获取事件失败: ${eventRes.status} ${eventRes.statusText}`);
+      return null;
+    }
+    
+    const eventData = await eventRes.json();
+    
+    if (!eventData.markets || eventData.markets.length === 0) {
+      console.log(`   ⚠️  事件中没有市场数据`);
+      return null;
+    }
+    
+    // 2. 获取第一个 market 的 slug
+    const marketSlug = eventData.markets[0].slug || eventData.markets[0].marketSlug;
+    if (!marketSlug) {
+      console.log(`   ⚠️  无法获取 market slug`);
+      return null;
+    }
+    
+    console.log(`   ✅ 找到 market slug: ${marketSlug}`);
+    
+    // 3. 获取 market 详情（包含 clobTokenIds）
+    const marketUrl = `https://gamma-api.polymarket.com/markets/slug/${marketSlug}`;
+    const marketRes = await fetch(marketUrl);
+    
+    if (!marketRes.ok) {
+      // 尝试使用 query 参数方式
+      const marketUrl2 = `https://gamma-api.polymarket.com/markets?slug=${marketSlug}`;
+      const marketRes2 = await fetch(marketUrl2);
+      
+      if (marketRes2.ok) {
+        const marketData = await marketRes2.json();
+        const market = Array.isArray(marketData) ? marketData[0] : marketData;
+        
+        if (market) {
+          console.log(`   ✅ 通过 markets?slug 获取到市场数据`);
+          return {
+            ...market,
+            name: market.name || eventData.title || eventData.question,
+            slug: market.slug || marketSlug,
+            conditionId: market.conditionId || eventData.markets[0].conditionId,
+            clobTokenIds: market.clobTokenIds || market.outcomes?.map((o: any) => o.tokenId).filter(Boolean),
+            tokens: market.outcomes?.map((o: any) => ({
+              tokenId: o.tokenId,
+              id: o.tokenId,
+              outcome: o.outcome || o.title,
+              price: o.price,
+            })) || [],
+          };
+        }
+      }
+      
+      console.log(`   ⚠️  获取市场详情失败: ${marketRes.status} ${marketRes.statusText}`);
+      return null;
+    }
+    
+    const market = await marketRes.json();
+    
+    // 4. 构建完整的市场对象
+    const fullMarket = {
+      ...market,
+      name: market.name || eventData.title || eventData.question,
+      slug: market.slug || marketSlug,
+      conditionId: market.conditionId || eventData.markets[0].conditionId,
+      clobTokenIds: market.clobTokenIds || market.outcomes?.map((o: any) => o.tokenId).filter(Boolean),
+      tokens: market.outcomes?.map((o: any) => ({
+        tokenId: o.tokenId,
+        id: o.tokenId,
+        outcome: o.outcome || o.title,
+        price: o.price,
+      })) || market.tokens || [],
+    };
+    
+    console.log(`   ✅ 成功获取市场数据`);
+    console.log(`      条件ID: ${fullMarket.conditionId || 'N/A'}`);
+    console.log(`      Token IDs: ${fullMarket.clobTokenIds?.length || 0} 个`);
+    
+    return fullMarket;
+  } catch (error: any) {
+    console.error(`   ❌ 通过事件 slug 获取市场失败: ${error?.message || error}`);
+    return null;
+  }
+}
+
 // 查找15分钟市场
 async function find15mMarket(coin: string): Promise<any> {
   if (!sdk) {
@@ -73,9 +167,30 @@ async function find15mMarket(coin: string): Promise<any> {
   }
 
   try {
-    // 方法1（推荐）: 使用 dipArb 服务查找市场（专门用于15分钟市场）
+    // 方法0（最优先）: 如果提供了事件 slug，直接使用
+    if (EVENT_SLUG) {
+      const market = await getMarketByEventSlug(EVENT_SLUG);
+      if (market) {
+        return market;
+      }
+    }
+    // 方法1: 使用 dipArb 服务查找市场（专门用于15分钟市场）
+    // 注意：需要先确保服务没有在运行
     if (sdk.dipArb && typeof sdk.dipArb.findAndStart === 'function') {
       try {
+        // 先确保 DipArb 服务已停止
+        if (typeof sdk.dipArb.stop === 'function') {
+          try {
+            await sdk.dipArb.stop();
+            await new Promise(resolve => setTimeout(resolve, 500));
+          } catch (e: any) {
+            // 如果服务没有运行，忽略错误
+            if (!e?.message?.includes('not running')) {
+              console.log(`   ⚠️  停止 DipArb 服务时出错: ${e?.message || e}`);
+            }
+          }
+        }
+        
         console.log(`   🔍 使用 dipArb 服务查找 ${coin} 15分钟市场...`);
         const result = await sdk.dipArb.findAndStart({
           coin,
@@ -578,8 +693,12 @@ async function main() {
     sdk = await PolymarketSDK.create({ privateKey });
     console.log('✅ SDK 初始化成功\n');
 
-    // 查找15分钟市场（优先使用 DipArbService，因为它专门用于15分钟市场）
-    console.log(`🔍 正在查找 ${MARKET_COIN} 15分钟市场...`);
+    // 查找15分钟市场
+    if (EVENT_SLUG) {
+      console.log(`🔍 使用指定的事件 slug 查找市场: ${EVENT_SLUG}`);
+    } else {
+      console.log(`🔍 正在查找 ${MARKET_COIN} 15分钟市场...`);
+    }
     
     // 先确保 DipArb 服务没有在运行（避免 "already running" 错误）
     if (sdk.dipArb && typeof sdk.dipArb.stop === 'function') {
@@ -596,7 +715,7 @@ async function main() {
       }
     }
     
-    // 使用统一的查找函数（内部会处理 DipArb）
+    // 使用统一的查找函数（内部会处理 DipArb 和事件 slug）
     currentMarket = await find15mMarket(MARKET_COIN);
 
     // 如果找不到市场，尝试使用手动指定的代币ID或条件ID
