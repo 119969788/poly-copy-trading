@@ -67,6 +67,53 @@ function printConfig() {
   console.log('');
 }
 
+// 规范化 outcomes 字段（防御式解析）
+function normalizeOutcomes(outcomes: any): Array<{ outcome: string; tokenId?: string; price?: number }> {
+  // 如果已经是数组，直接返回
+  if (Array.isArray(outcomes)) {
+    return outcomes.map((o: any) => {
+      if (typeof o === 'string') {
+        return { outcome: o };
+      }
+      return {
+        outcome: o.outcome || o.title || String(o),
+        tokenId: o.tokenId,
+        price: o.price,
+      };
+    });
+  }
+
+  // 如果是字符串，尝试解析
+  if (typeof outcomes === 'string') {
+    const s = outcomes.trim();
+    
+    // 尝试 JSON 解析（如 '["Up","Down"]'）
+    if (s.startsWith('[') && s.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(s);
+        if (Array.isArray(parsed)) {
+          return parsed.map((x: any) => ({ outcome: String(x) }));
+        }
+      } catch (e) {
+        // JSON 解析失败，继续尝试其他方式
+      }
+    }
+    
+    // 逗号分隔（如 'Up,Down'）
+    if (s.includes(',')) {
+      return s.split(',').map(x => ({ outcome: x.trim() })).filter(x => x.outcome);
+    }
+    
+    // 单个值
+    if (s) {
+      return [{ outcome: s }];
+    }
+  }
+
+  // 空值或其他类型
+  return [];
+}
+
 // 通过事件 slug 直接获取市场信息（最可靠的方法）
 async function getMarketByEventSlug(eventSlug: string): Promise<any> {
   try {
@@ -98,64 +145,92 @@ async function getMarketByEventSlug(eventSlug: string): Promise<any> {
     console.log(`   ✅ 找到 market slug: ${marketSlug}`);
     
     // 3. 获取 market 详情（包含 clobTokenIds）
-    const marketUrl = `https://gamma-api.polymarket.com/markets/slug/${marketSlug}`;
-    const marketRes = await fetch(marketUrl);
+    // 优先使用 query 参数方式（更稳定）
+    const marketUrl = `https://gamma-api.polymarket.com/markets?slug=${marketSlug}`;
+    let marketRes = await fetch(marketUrl);
+    
+    // 如果失败，尝试 path 参数方式
+    if (!marketRes.ok) {
+      const marketUrl2 = `https://gamma-api.polymarket.com/markets/slug/${marketSlug}`;
+      marketRes = await fetch(marketUrl2);
+    }
     
     if (!marketRes.ok) {
-      // 尝试使用 query 参数方式
-      const marketUrl2 = `https://gamma-api.polymarket.com/markets?slug=${marketSlug}`;
-      const marketRes2 = await fetch(marketUrl2);
-      
-      if (marketRes2.ok) {
-        const marketData = await marketRes2.json();
-        const market = Array.isArray(marketData) ? marketData[0] : marketData;
-        
-        if (market) {
-          console.log(`   ✅ 通过 markets?slug 获取到市场数据`);
-          return {
-            ...market,
-            name: market.name || eventData.title || eventData.question,
-            slug: market.slug || marketSlug,
-            conditionId: market.conditionId || eventData.markets[0].conditionId,
-            clobTokenIds: market.clobTokenIds || market.outcomes?.map((o: any) => o.tokenId).filter(Boolean),
-            tokens: market.outcomes?.map((o: any) => ({
-              tokenId: o.tokenId,
-              id: o.tokenId,
-              outcome: o.outcome || o.title,
-              price: o.price,
-            })) || [],
-          };
-        }
-      }
-      
       console.log(`   ⚠️  获取市场详情失败: ${marketRes.status} ${marketRes.statusText}`);
       return null;
     }
     
-    const market = await marketRes.json();
+    const marketData = await marketRes.json();
+    const market = Array.isArray(marketData) ? marketData[0] : marketData;
     
-    // 4. 构建完整的市场对象
+    if (!market) {
+      console.log(`   ⚠️  市场数据为空`);
+      return null;
+    }
+    
+    console.log(`   ✅ 成功获取市场数据`);
+    
+    // 4. 提取关键信息（优先使用 clobTokenIds）
+    const clobTokenIds = market.clobTokenIds || [];
+    const conditionId = market.conditionId || eventData.markets[0].conditionId;
+    
+    // 规范化 outcomes
+    const normalizedOutcomes = normalizeOutcomes(market.outcomes);
+    
+    // 构建 tokens 数组
+    let tokens: Array<{ tokenId: string; id: string; outcome: string; price?: number }> = [];
+    
+    // 方法1: 如果有 clobTokenIds，直接使用（最可靠）
+    if (clobTokenIds.length >= 2) {
+      tokens = [
+        {
+          tokenId: clobTokenIds[0],
+          id: clobTokenIds[0],
+          outcome: normalizedOutcomes[0]?.outcome || 'Yes' || 'Up',
+          price: normalizedOutcomes[0]?.price,
+        },
+        {
+          tokenId: clobTokenIds[1],
+          id: clobTokenIds[1],
+          outcome: normalizedOutcomes[1]?.outcome || 'No' || 'Down',
+          price: normalizedOutcomes[1]?.price,
+        },
+      ];
+      console.log(`   ✅ 使用 clobTokenIds: ${clobTokenIds.length} 个代币`);
+    } else if (normalizedOutcomes.length >= 2) {
+      // 方法2: 如果没有 clobTokenIds，尝试从 outcomes 提取
+      tokens = normalizedOutcomes.slice(0, 2).map((o, index) => ({
+        tokenId: o.tokenId || clobTokenIds[index] || '',
+        id: o.tokenId || clobTokenIds[index] || '',
+        outcome: o.outcome,
+        price: o.price,
+      }));
+      console.log(`   ⚠️  使用 outcomes 数据（clobTokenIds 不可用）`);
+    }
+    
+    // 5. 构建完整的市场对象
     const fullMarket = {
       ...market,
       name: market.name || eventData.title || eventData.question,
       slug: market.slug || marketSlug,
-      conditionId: market.conditionId || eventData.markets[0].conditionId,
-      clobTokenIds: market.clobTokenIds || market.outcomes?.map((o: any) => o.tokenId).filter(Boolean),
-      tokens: market.outcomes?.map((o: any) => ({
-        tokenId: o.tokenId,
-        id: o.tokenId,
-        outcome: o.outcome || o.title,
-        price: o.price,
-      })) || market.tokens || [],
+      conditionId: conditionId,
+      clobTokenIds: clobTokenIds,
+      tokens: tokens,
     };
     
-    console.log(`   ✅ 成功获取市场数据`);
+    console.log(`   ✅ 市场信息构建完成`);
     console.log(`      条件ID: ${fullMarket.conditionId || 'N/A'}`);
     console.log(`      Token IDs: ${fullMarket.clobTokenIds?.length || 0} 个`);
+    if (fullMarket.tokens.length > 0) {
+      console.log(`      代币: ${fullMarket.tokens.map(t => `${t.outcome}(${t.tokenId?.substring(0, 10)}...)`).join(', ')}`);
+    }
     
     return fullMarket;
   } catch (error: any) {
     console.error(`   ❌ 通过事件 slug 获取市场失败: ${error?.message || error}`);
+    if (error?.stack) {
+      console.error(`   堆栈: ${error.stack}`);
+    }
     return null;
   }
 }
