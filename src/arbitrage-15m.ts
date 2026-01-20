@@ -73,37 +73,105 @@ async function find15mMarket(coin: string): Promise<any> {
   }
 
   try {
-    // 方法1: 使用 gammaApi 搜索市场
-    if (sdk.gammaApi) {
-      const markets = await sdk.gammaApi.searchMarkets({
-        query: `${coin} 15m`,
-        limit: 20,
-      });
-
-      // 查找15分钟市场
-      for (const market of markets) {
-        if (market.duration === '15m' || market.duration === '15分钟' || 
-            market.slug?.includes('15m') || market.slug?.includes('15分钟')) {
-          return market;
-        }
-      }
-    }
-
-    // 方法2: 使用 markets 服务
+    // 方法1: 使用 markets 服务，尝试常见的市场 slug 格式
     if (sdk.markets) {
-      // 尝试通过市场名称查找
-      const marketSlug = `${coin.toLowerCase()}-15m`;
-      try {
-        const market = await sdk.markets.getMarket(marketSlug);
-        if (market) {
-          return market;
+      const possibleSlugs = [
+        `${coin.toLowerCase()}-15m-up-down`,
+        `${coin.toLowerCase()}-15m`,
+        `${coin.toLowerCase()}-15min`,
+        `will-${coin.toLowerCase()}-be-up-in-15m`,
+        `will-${coin.toLowerCase()}-be-down-in-15m`,
+      ];
+
+      for (const slug of possibleSlugs) {
+        try {
+          console.log(`   🔍 尝试查找市场: ${slug}`);
+          const market = await sdk.markets.getMarket(slug);
+          if (market) {
+            console.log(`   ✅ 找到市场: ${slug}`);
+            return market;
+          }
+        } catch (e: any) {
+          // 继续尝试下一个
+          if (!e?.message?.includes('not found') && !e?.message?.includes('404')) {
+            console.log(`   ⚠️  查找 ${slug} 时出错: ${e?.message || e}`);
+          }
         }
-      } catch (e) {
-        // 继续尝试其他方法
       }
     }
+
+    // 方法2: 使用 gammaApi 搜索（如果方法存在）
+    if (sdk.gammaApi) {
+      try {
+        // 尝试不同的方法名
+        const searchMethods = [
+          'searchMarkets',
+          'search',
+          'getMarkets',
+          'findMarkets',
+        ];
+
+        for (const methodName of searchMethods) {
+          if (typeof (sdk.gammaApi as any)[methodName] === 'function') {
+            try {
+              console.log(`   🔍 使用 gammaApi.${methodName} 搜索市场...`);
+              const result = await (sdk.gammaApi as any)[methodName]({
+                query: `${coin} 15m`,
+                limit: 20,
+              });
+
+              const markets = Array.isArray(result) ? result : (result?.markets || result?.results || []);
+              
+              // 查找15分钟市场
+              for (const market of markets) {
+                if (market.duration === '15m' || market.duration === '15分钟' || 
+                    market.slug?.includes('15m') || market.slug?.includes('15分钟') ||
+                    market.name?.toLowerCase().includes('15m') ||
+                    market.name?.toLowerCase().includes('15分钟')) {
+                  console.log(`   ✅ 通过搜索找到市场: ${market.slug || market.name || 'N/A'}`);
+                  return market;
+                }
+              }
+            } catch (e: any) {
+              // 继续尝试下一个方法
+              if (!e?.message?.includes('not a function')) {
+                console.log(`   ⚠️  ${methodName} 失败: ${e?.message || e}`);
+              }
+            }
+          }
+        }
+      } catch (e: any) {
+        console.log(`   ⚠️  gammaApi 搜索失败: ${e?.message || e}`);
+      }
+    }
+
+    // 方法3: 使用 dipArb 服务查找市场（如果可用）
+    if (sdk.dipArb && typeof sdk.dipArb.findAndStart === 'function') {
+      try {
+        console.log(`   🔍 使用 dipArb 服务查找市场...`);
+        const result = await sdk.dipArb.findAndStart({
+          coin,
+          preferDuration: '15m',
+        });
+        
+        if (result && result.market) {
+          console.log(`   ✅ 通过 dipArb 找到市场: ${result.market.name || result.market.slug || 'N/A'}`);
+          // 停止 dipArb（我们只需要市场信息）
+          if (typeof sdk.dipArb.stop === 'function') {
+            await sdk.dipArb.stop();
+          }
+          return result.market;
+        }
+      } catch (e: any) {
+        console.log(`   ⚠️  dipArb 查找失败: ${e?.message || e}`);
+      }
+    }
+
+    // 方法4: 尝试使用 getMarket 通过 condition ID（如果知道的话）
+    // 这里可以添加已知的 condition ID
 
     console.warn(`   ⚠️  未找到 ${coin} 15分钟市场`);
+    console.warn(`   提示：可以手动设置 ARBITRAGE_TOKEN_ID 环境变量来指定代币ID`);
     return null;
   } catch (error: any) {
     console.error(`   ❌ 查找市场失败:`, error?.message || error);
@@ -425,10 +493,42 @@ async function main() {
     console.log(`🔍 正在查找 ${MARKET_COIN} 15分钟市场...`);
     currentMarket = await find15mMarket(MARKET_COIN);
 
+    // 如果找不到市场，尝试使用手动指定的代币ID或条件ID
     if (!currentMarket) {
-      console.error(`❌ 未找到 ${MARKET_COIN} 15分钟市场`);
-      console.error('   请检查市场是否存在，或尝试其他币种（ETH, BTC, SOL等）');
-      process.exit(1);
+      const tokenId = process.env.ARBITRAGE_TOKEN_ID;
+      const conditionId = process.env.ARBITRAGE_CONDITION_ID;
+      
+      if (tokenId || conditionId) {
+        console.log(`\n🔍 尝试使用手动指定的 ${tokenId ? '代币ID' : '条件ID'}...`);
+        
+        try {
+          if (conditionId && sdk.markets) {
+            // 通过条件ID获取市场
+            const market = await sdk.markets.getMarket(conditionId);
+            if (market) {
+              currentMarket = market;
+              console.log(`✅ 通过条件ID找到市场: ${market.slug || market.name || 'N/A'}`);
+            }
+          } else if (tokenId) {
+            // 如果有代币ID，尝试通过代币获取市场信息
+            // 注意：这需要从代币ID推断条件ID，可能需要其他方法
+            console.log(`   ⚠️  仅提供代币ID时，需要手动设置条件ID或市场slug`);
+            console.error(`❌ 未找到市场，请手动设置 ARBITRAGE_CONDITION_ID 环境变量`);
+            process.exit(1);
+          }
+        } catch (e: any) {
+          console.error(`   ❌ 使用手动ID查找市场失败: ${e?.message || e}`);
+        }
+      }
+      
+      if (!currentMarket) {
+        console.error(`\n❌ 未找到 ${MARKET_COIN} 15分钟市场`);
+        console.error('   解决方案：');
+        console.error('   1. 检查市场是否存在，或尝试其他币种（ETH, BTC, SOL等）');
+        console.error('   2. 手动设置 ARBITRAGE_CONDITION_ID 环境变量（市场的条件ID）');
+        console.error('   3. 或者设置 ARBITRAGE_TOKEN_ID 和 ARBITRAGE_CONDITION_ID 环境变量');
+        process.exit(1);
+      }
     }
 
     console.log(`✅ 找到市场: ${currentMarket.slug || currentMarket.name || 'N/A'}`);
