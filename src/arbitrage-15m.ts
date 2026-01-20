@@ -691,6 +691,9 @@ async function probeTokenTradable(tokenId: string): Promise<boolean> {
   }
 }
 
+// 不可交易的市场slug缓存（避免重复尝试）
+const nonTradableSlugs = new Set<string>();
+
 // 确保获取到可交易的15分钟市场
 async function ensureWorkingMarket(coin: string): Promise<any> {
   console.log(`   🔍 正在查找最新的可交易 ${coin} 15分钟市场...`);
@@ -699,10 +702,19 @@ async function ensureWorkingMarket(coin: string): Promise<any> {
   for (let attempt = 0; attempt < 10; attempt++) {
     try {
       // 获取最新的15分钟市场（确保是active/open状态）
-      const market = await findLatestActive15mMarket(coin);
+      // 传入已尝试过的不可交易slug列表，避免重复尝试
+      const market = await findLatestActive15mMarket(coin, nonTradableSlugs);
       
       if (!market || !market.clobTokenIds || market.clobTokenIds.length < 2) {
         console.log(`   ⚠️  第 ${attempt + 1} 次尝试：未找到有效的市场数据`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+
+      // 如果这个市场已经在不可交易列表中，跳过
+      const marketSlug = market.slug || market.name || '';
+      if (nonTradableSlugs.has(marketSlug)) {
+        console.log(`   ⚠️  第 ${attempt + 1} 次尝试：市场 ${marketSlug} 已在不可交易列表，跳过`);
         await new Promise(resolve => setTimeout(resolve, 1000));
         continue;
       }
@@ -715,15 +727,22 @@ async function ensureWorkingMarket(coin: string): Promise<any> {
       const downTradable = await probeTokenTradable(downTokenId);
 
       if (upTradable && downTradable) {
-        console.log(`   ✅ 找到可交易的市场: ${market.slug || market.name || 'N/A'}`);
+        console.log(`   ✅ 找到可交易的市场: ${marketSlug}`);
         // 清除关闭标记
         marketClosedTokens.clear();
         consecutive404Count = 0;
+        // 从不可交易列表中移除（如果存在）
+        nonTradableSlugs.delete(marketSlug);
         return market;
       } else {
         console.log(`   ⚠️  第 ${attempt + 1} 次尝试：市场在CLOB不可交易`);
         console.log(`      UP token 可交易: ${upTradable ? '✅' : '❌'}`);
         console.log(`      DOWN token 可交易: ${downTradable ? '✅' : '❌'}`);
+        // 添加到不可交易列表
+        if (marketSlug) {
+          nonTradableSlugs.add(marketSlug);
+          console.log(`   💡 已标记市场 ${marketSlug} 为不可交易，将跳过此市场`);
+        }
       }
 
       // 等待一段时间再尝试（避免API限流）
@@ -738,12 +757,34 @@ async function ensureWorkingMarket(coin: string): Promise<any> {
 }
 
 // 查找最新的活跃15分钟市场（确保是active/open状态）
-async function findLatestActive15mMarket(coin: string): Promise<any> {
+async function findLatestActive15mMarket(coin: string, skipSlugs?: Set<string>): Promise<any> {
   if (!sdk) {
     return null;
   }
 
   try {
+    // 如果指定了EVENT_SLUG，先检查是否在跳过列表中
+    if (EVENT_SLUG && skipSlugs && skipSlugs.has(EVENT_SLUG)) {
+      console.log(`   ⚠️  指定的事件slug ${EVENT_SLUG} 已在不可交易列表，跳过并搜索最新市场`);
+      // 继续执行下面的搜索逻辑，不再使用指定的slug
+    } else if (EVENT_SLUG && (!skipSlugs || !skipSlugs.has(EVENT_SLUG))) {
+      // 如果指定了EVENT_SLUG且不在跳过列表中，先尝试使用它
+      console.log(`   🔍 优先使用指定的事件 slug: ${EVENT_SLUG}`);
+      const marketBySlug = await getMarketByEventSlug(EVENT_SLUG);
+      if (marketBySlug) {
+        // 检查市场状态
+        const status = await checkMarketStatus(marketBySlug);
+        if (status === 'active' || status === 'open') {
+          console.log(`   ✅ 通过事件 slug 成功获取市场（状态: ${status}）`);
+          return marketBySlug;
+        } else {
+          console.log(`   ⚠️  指定的事件slug对应的市场状态为 ${status}，搜索最新市场...`);
+        }
+      } else {
+        console.log(`   ⚠️  通过指定的事件slug获取失败，搜索最新市场...`);
+      }
+    }
+
     // 方法1: 使用Gamma API搜索最新的活跃市场
     try {
       console.log(`   🔍 通过Gamma API搜索最新的活跃 ${coin} 15分钟市场...`);
@@ -770,7 +811,11 @@ async function findLatestActive15mMarket(coin: string): Promise<any> {
                             m.status === 'open' ||
                             m.active === undefined; // 如果没有状态字段，也尝试
             
-            return is15m && isActive;
+            // 跳过不可交易的市场
+            const marketSlug = m.slug || m.name || '';
+            const shouldSkip = skipSlugs && skipSlugs.has(marketSlug);
+            
+            return is15m && isActive && !shouldSkip;
           })
           .sort((a: any, b: any) => {
             // 按创建时间或开始时间排序，最新的在前
@@ -779,9 +824,14 @@ async function findLatestActive15mMarket(coin: string): Promise<any> {
             return timeB - timeA; // 降序
           });
 
-        if (active15mMarkets.length > 0) {
-          const market = active15mMarkets[0];
-          console.log(`   ✅ 找到最新的活跃市场: ${market.slug || market.name || 'N/A'}`);
+        // 遍历市场列表，找到第一个不在跳过列表中的
+        for (const market of active15mMarkets) {
+          const marketSlug = market.slug || market.name || '';
+          if (skipSlugs && skipSlugs.has(marketSlug)) {
+            continue; // 跳过不可交易的市场
+          }
+          
+          console.log(`   ✅ 找到最新的活跃市场: ${marketSlug}`);
           
           // 如果市场没有完整的clobTokenIds，通过Gamma API获取
           if (!market.clobTokenIds && market.slug) {
@@ -815,7 +865,21 @@ async function findLatestActive15mMarket(coin: string): Promise<any> {
       console.log(`   ⚠️  Gamma API搜索失败: ${e?.message || e}`);
     }
 
-    // 方法2: 回退到原有的查找逻辑
+    // 方法2: 回退到原有的查找逻辑（但不使用指定的EVENT_SLUG如果它在跳过列表中）
+    if (EVENT_SLUG && skipSlugs && skipSlugs.has(EVENT_SLUG)) {
+      // 临时清除EVENT_SLUG，避免使用不可交易的slug
+      const originalEventSlug = EVENT_SLUG;
+      (process.env as any).ARBITRAGE_EVENT_SLUG = '';
+      try {
+        const market = await find15mMarket(coin);
+        (process.env as any).ARBITRAGE_EVENT_SLUG = originalEventSlug;
+        return market;
+      } catch (e) {
+        (process.env as any).ARBITRAGE_EVENT_SLUG = originalEventSlug;
+        throw e;
+      }
+    }
+    
     return await find15mMarket(coin);
   } catch (error: any) {
     console.error(`   ❌ 查找最新活跃市场失败:`, error?.message || error);
@@ -1522,36 +1586,9 @@ async function main() {
     }
     
     // 使用统一的查找函数，确保获取到可交易的市场
-    // 如果设置了 EVENT_SLUG，优先使用，失败时自动回退到搜索
-    if (EVENT_SLUG) {
-      // 如果指定了事件slug，先尝试使用它
-      console.log(`   🔍 优先使用指定的事件 slug: ${EVENT_SLUG}`);
-      const marketBySlug = await getMarketByEventSlug(EVENT_SLUG);
-      if (marketBySlug) {
-        // 探测是否可交易
-        const [upId, downId] = marketBySlug.clobTokenIds || [];
-        if (upId && downId) {
-          const upTradable = await probeTokenTradable(String(upId));
-          const downTradable = await probeTokenTradable(String(downId));
-          if (upTradable && downTradable) {
-            currentMarket = marketBySlug;
-            console.log(`   ✅ 指定的事件slug对应的市场可交易`);
-          } else {
-            console.log(`   ⚠️  指定的事件slug对应的市场在CLOB不可交易，切换到最新市场...`);
-            currentMarket = await ensureWorkingMarket(MARKET_COIN);
-          }
-        } else {
-          console.log(`   ⚠️  指定的事件slug缺少token IDs，切换到最新市场...`);
-          currentMarket = await ensureWorkingMarket(MARKET_COIN);
-        }
-      } else {
-        console.log(`   ⚠️  无法通过指定的事件slug获取市场，切换到最新市场...`);
-        currentMarket = await ensureWorkingMarket(MARKET_COIN);
-      }
-    } else {
-      // 没有指定slug，直接获取最新的可交易市场
-      currentMarket = await ensureWorkingMarket(MARKET_COIN);
-    }
+    // 如果设置了 EVENT_SLUG，优先使用，但如果不可交易会被标记并跳过
+    // ensureWorkingMarket 会自动处理不可交易的市场，避免重复尝试
+    currentMarket = await ensureWorkingMarket(MARKET_COIN);
 
     // 如果找不到市场，尝试使用手动指定的代币ID或条件ID
     if (!currentMarket) {
