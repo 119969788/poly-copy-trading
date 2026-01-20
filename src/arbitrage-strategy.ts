@@ -1,7 +1,6 @@
 // 15分钟套利策略
 // 赔率80买（价格<=0.80买入），90卖（价格>=0.90卖出）
 
-import { PolySDK } from '@catalyst-team/poly-sdk';
 import dotenv from 'dotenv';
 
 // 加载环境变量
@@ -22,8 +21,8 @@ const HOLDING_TIMEOUT = parseInt(process.env.ARBITRAGE_HOLDING_TIMEOUT || '90000
 const TOKEN_ID = process.env.ARBITRAGE_TOKEN_ID || ''; // 要监控的代币ID
 const DRY_RUN = process.env.DRY_RUN !== 'false'; // 模拟模式
 
-// 初始化 SDK
-const sdk = new PolySDK({ privateKey });
+// SDK 变量（将在初始化函数中设置）
+let sdk: any = null;
 
 // 持仓记录
 interface PositionRecord {
@@ -35,6 +34,63 @@ interface PositionRecord {
 }
 
 const positions = new Map<string, PositionRecord>(); // tokenId -> PositionRecord
+
+// 初始化 SDK - 尝试多种导入方式
+async function initializeSDK() {
+  try {
+    // 方式1: 尝试使用 PolymarketSDK (推荐，与 dip-arb-15m.ts 一致)
+    try {
+      const { PolymarketSDK } = await import('@catalyst-team/poly-sdk');
+      if (PolymarketSDK && typeof PolymarketSDK.create === 'function') {
+        sdk = await PolymarketSDK.create({ privateKey });
+        console.log('✅ 使用 PolymarketSDK 初始化成功');
+        return;
+      } else if (PolymarketSDK && typeof PolymarketSDK === 'function') {
+        sdk = new PolymarketSDK({ privateKey });
+        console.log('✅ 使用 PolymarketSDK (new) 初始化成功');
+        return;
+      }
+    } catch (e) {
+      // 继续尝试其他方式
+    }
+
+    // 方式2: 尝试使用 PolySDK
+    try {
+      const { PolySDK } = await import('@catalyst-team/poly-sdk');
+      if (PolySDK && typeof PolySDK === 'function') {
+        sdk = new PolySDK({ privateKey });
+        console.log('✅ 使用 PolySDK 初始化成功');
+        return;
+      }
+    } catch (e) {
+      // 继续尝试其他方式
+    }
+
+    // 方式3: 尝试使用 default export
+    try {
+      const sdkModule = await import('@catalyst-team/poly-sdk');
+      const SDKClass = sdkModule.default || sdkModule;
+      if (SDKClass && typeof SDKClass === 'function') {
+        if (typeof SDKClass.create === 'function') {
+          sdk = await SDKClass.create({ privateKey });
+        } else {
+          sdk = new SDKClass({ privateKey });
+        }
+        console.log('✅ 使用 default export 初始化成功');
+        return;
+      }
+    } catch (e) {
+      // 所有方式都失败
+    }
+
+    throw new Error('无法初始化 SDK：未找到有效的 SDK 构造函数');
+  } catch (error: any) {
+    console.error('❌ SDK 初始化失败:', error?.message || error);
+    console.error('   请检查 @catalyst-team/poly-sdk 是否正确安装');
+    console.error('   可以尝试: npm install @catalyst-team/poly-sdk@latest');
+    process.exit(1);
+  }
+}
 
 // 打印横幅
 function printBanner() {
@@ -61,6 +117,11 @@ function printConfig() {
 
 // 获取市场价格
 async function getMarketPrice(tokenId: string): Promise<number | null> {
+  if (!sdk) {
+    console.error('   ❌ SDK 未初始化');
+    return null;
+  }
+
   try {
     // 方法1: 尝试使用 SDK 的 getMarket 方法
     if (typeof (sdk as any).getMarket === 'function') {
@@ -101,6 +162,11 @@ async function getMarketPrice(tokenId: string): Promise<number | null> {
 
 // 买入代币
 async function buyToken(tokenId: string, price: number): Promise<boolean> {
+  if (!sdk) {
+    console.error('   ❌ SDK 未初始化');
+    return false;
+  }
+
   try {
     console.log(`\n🛒 买入信号触发`);
     console.log(`   代币ID: ${tokenId}`);
@@ -153,6 +219,11 @@ async function buyToken(tokenId: string, price: number): Promise<boolean> {
 
 // 卖出代币
 async function sellToken(tokenId: string, position: PositionRecord, currentPrice: number): Promise<boolean> {
+  if (!sdk) {
+    console.error('   ❌ SDK 未初始化');
+    return false;
+  }
+
   try {
     const profit = currentPrice - position.buyPrice;
     const profitPercent = ((currentPrice - position.buyPrice) / position.buyPrice) * 100;
@@ -199,6 +270,10 @@ async function sellToken(tokenId: string, position: PositionRecord, currentPrice
 
 // 检查持仓超时
 async function checkHoldingTimeout() {
+  if (!sdk) {
+    return;
+  }
+
   const now = Date.now();
   const timeoutPositions: Array<{ tokenId: string; position: PositionRecord }> = [];
   
@@ -243,6 +318,10 @@ async function checkHoldingTimeout() {
 
 // 获取所有持仓
 async function getAllPositions(): Promise<string[]> {
+  if (!sdk) {
+    return [];
+  }
+
   try {
     // 方法1: 尝试使用 sdk.smartMoney.getPositions
     if (typeof (sdk as any).smartMoney?.getPositions === 'function') {
@@ -266,6 +345,11 @@ async function getAllPositions(): Promise<string[]> {
 
 // 主循环
 async function mainLoop() {
+  if (!sdk) {
+    console.error('   ❌ SDK 未初始化');
+    return;
+  }
+
   try {
     // 获取要监控的代币列表
     let tokenIds: string[] = [];
@@ -328,6 +412,11 @@ async function mainLoop() {
 async function main() {
   printBanner();
   printConfig();
+  
+  // 初始化 SDK
+  console.log('🚀 正在初始化 SDK...');
+  await initializeSDK();
+  console.log('');
   
   console.log('🚀 开始套利策略监控...\n');
   
