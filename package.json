@@ -13,6 +13,7 @@
     "batch-sell-real": "tsx src/batch-sell.ts --real",
     "generate-api": "tsx src/generate-api-credentials.ts",
     "generate-api-clob": "tsx src/generate-api-clob.ts",
+    "arbitrage": "tsx src/arbitrage-strategy.ts",
     "pm2:start": "pm2 start ecosystem.config.js",
     "pm2:stop": "pm2 stop poly-copy-trading",
     "pm2:restart": "pm2 restart poly-copy-trading",

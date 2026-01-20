@@ -35,14 +35,34 @@ Write-Host ""
 # ============================================
 $FILES_TO_UPLOAD = @(
     @{
-        LocalPath = "src\batch-sell.ts"
-        RemotePath = "$SERVER_PATH/src/batch-sell.ts"
-        Description = "批量出售脚本（已修复SDK导入）"
+        LocalPath = "src\arbitrage-strategy.ts"
+        RemotePath = "$SERVER_PATH/src/arbitrage-strategy.ts"
+        Description = "15分钟套利策略脚本"
     },
     @{
-        LocalPath = "create-batch-sell.sh"
-        RemotePath = "$SERVER_PATH/create-batch-sell.sh"
-        Description = "自动创建脚本"
+        LocalPath = "src\batch-sell.ts"
+        RemotePath = "$SERVER_PATH/src/batch-sell.ts"
+        Description = "批量出售脚本"
+    },
+    @{
+        LocalPath = "src\generate-api-clob.ts"
+        RemotePath = "$SERVER_PATH/src/generate-api-clob.ts"
+        Description = "API凭证生成脚本（CLOB）"
+    },
+    @{
+        LocalPath = "src\generate-api-credentials.ts"
+        RemotePath = "$SERVER_PATH/src/generate-api-credentials.ts"
+        Description = "API凭证生成脚本（SDK）"
+    },
+    @{
+        LocalPath = "package.json"
+        RemotePath = "$SERVER_PATH/package.json"
+        Description = "项目配置文件（包含新脚本）"
+    },
+    @{
+        LocalPath = "env.example.txt"
+        RemotePath = "$SERVER_PATH/env.example.txt"
+        Description = "环境变量配置示例"
     },
     @{
         LocalPath = "ecosystem.config.js"
@@ -102,7 +122,18 @@ if ($SUCCESS_COUNT -gt 0) {
     Write-Host ""
     Write-Host "下一步：在服务器上执行：" -ForegroundColor Yellow
     Write-Host "  cd $SERVER_PATH" -ForegroundColor White
-    Write-Host "  bash create-batch-sell.sh" -ForegroundColor White
-    Write-Host "  或" -ForegroundColor White
-    Write-Host "  npx tsx src/batch-sell.ts" -ForegroundColor White
+    Write-Host "" -ForegroundColor White
+    Write-Host "  1. 安装新依赖（如果需要）：" -ForegroundColor Cyan
+    Write-Host "     npm install" -ForegroundColor White
+    Write-Host "" -ForegroundColor White
+    Write-Host "  2. 运行套利策略：" -ForegroundColor Cyan
+    Write-Host "     npm run arbitrage" -ForegroundColor White
+    Write-Host "     或" -ForegroundColor White
+    Write-Host "     npx tsx src/arbitrage-strategy.ts" -ForegroundColor White
+    Write-Host "" -ForegroundColor White
+    Write-Host "  3. 生成API凭证：" -ForegroundColor Cyan
+    Write-Host "     npm run generate-api-clob" -ForegroundColor White
+    Write-Host "" -ForegroundColor White
+    Write-Host "  4. 批量出售：" -ForegroundColor Cyan
+    Write-Host "     npm run batch-sell" -ForegroundColor White
 }
