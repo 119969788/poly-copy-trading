@@ -167,11 +167,15 @@ async function find15mMarket(coin: string): Promise<any> {
   }
 
   try {
-    // 方法0（最优先）: 如果提供了事件 slug，直接使用
+    // 方法0（最优先）: 如果提供了事件 slug，直接使用，不进行其他搜索
     if (EVENT_SLUG) {
+      console.log(`   ✅ 使用指定的事件 slug，跳过自动搜索`);
       const market = await getMarketByEventSlug(EVENT_SLUG);
       if (market) {
         return market;
+      } else {
+        console.error(`   ❌ 无法通过事件 slug 获取市场，请检查 ARBITRAGE_EVENT_SLUG 是否正确`);
+        return null;
       }
     }
     // 方法1: 使用 dipArb 服务查找市场（专门用于15分钟市场）
@@ -696,26 +700,29 @@ async function main() {
     // 查找15分钟市场
     if (EVENT_SLUG) {
       console.log(`🔍 使用指定的事件 slug 查找市场: ${EVENT_SLUG}`);
+      console.log(`   ⚠️  已设置 ARBITRAGE_EVENT_SLUG，将跳过所有自动搜索`);
     } else {
       console.log(`🔍 正在查找 ${MARKET_COIN} 15分钟市场...`);
-    }
-    
-    // 先确保 DipArb 服务没有在运行（避免 "already running" 错误）
-    if (sdk.dipArb && typeof sdk.dipArb.stop === 'function') {
-      try {
-        await sdk.dipArb.stop();
-        // 等待一小段时间确保服务完全停止
-        await new Promise(resolve => setTimeout(resolve, 500));
-        console.log(`   🔄 已确保 DipArb 服务已停止`);
-      } catch (e: any) {
-        // 如果停止失败（可能没有运行），继续
-        if (!e?.message?.includes('not running')) {
-          console.log(`   ⚠️  停止 DipArb 服务时出错: ${e?.message || e}`);
+      
+      // 只有在没有设置 EVENT_SLUG 时才需要停止 DipArb 服务
+      // 因为如果设置了 EVENT_SLUG，不会使用 DipArb
+      if (sdk.dipArb && typeof sdk.dipArb.stop === 'function') {
+        try {
+          await sdk.dipArb.stop();
+          // 等待一小段时间确保服务完全停止
+          await new Promise(resolve => setTimeout(resolve, 500));
+          console.log(`   🔄 已确保 DipArb 服务已停止`);
+        } catch (e: any) {
+          // 如果停止失败（可能没有运行），继续
+          if (!e?.message?.includes('not running')) {
+            console.log(`   ⚠️  停止 DipArb 服务时出错: ${e?.message || e}`);
+          }
         }
       }
     }
     
-    // 使用统一的查找函数（内部会处理 DipArb 和事件 slug）
+    // 使用统一的查找函数
+    // 如果设置了 EVENT_SLUG，只使用事件 slug，不进行其他搜索
     currentMarket = await find15mMarket(MARKET_COIN);
 
     // 如果找不到市场，尝试使用手动指定的代币ID或条件ID
